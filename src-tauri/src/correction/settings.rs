@@ -179,7 +179,12 @@ mod tests {
         let names: Vec<_> = default_tones().into_iter().map(|t| t.name).collect();
         assert_eq!(
             names,
-            ["Meu estilo", "Mais formal", "Mais curto", "Melhorar argumentos"]
+            [
+                "Meu estilo",
+                "Mais formal",
+                "Mais curto",
+                "Melhorar argumentos"
+            ]
         );
     }
 

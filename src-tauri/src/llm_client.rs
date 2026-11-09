@@ -219,13 +219,13 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
 /// HTTP client with provider-specific headers. The headers are set per
 /// request, so every instance can share one connection pool and consecutive
 /// requests reuse an open connection instead of a new TCP + TLS handshake.
-struct ProviderClient {
+pub(crate) struct ProviderClient {
     client: &'static reqwest::Client,
     headers: HeaderMap,
 }
 
 impl ProviderClient {
-    fn post(&self, url: &str) -> reqwest::RequestBuilder {
+    pub(crate) fn post(&self, url: &str) -> reqwest::RequestBuilder {
         self.client.post(url).headers(self.headers.clone())
     }
 
@@ -251,7 +251,7 @@ fn shared_client() -> Result<&'static reqwest::Client, String> {
 }
 
 /// Create an HTTP client with provider-specific headers
-fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<ProviderClient, String> {
+pub(crate) fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<ProviderClient, String> {
     Ok(ProviderClient {
         client: shared_client()?,
         headers: build_headers(provider, api_key)?,
@@ -339,7 +339,7 @@ fn sanitized_url_for_log(url: &str) -> String {
         .unwrap_or_else(|_| "<invalid URL>".to_string())
 }
 
-fn report_reqwest_error(context: &str, error: &reqwest::Error) -> String {
+pub(crate) fn report_reqwest_error(context: &str, error: &reqwest::Error) -> String {
     let kinds = reqwest_error_kinds(error);
     let url = error
         .url()

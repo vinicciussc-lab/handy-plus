@@ -3,4 +3,5 @@
 pub mod import;
 pub mod local_engine;
 pub mod settings;
+pub mod stream;
 pub mod text;

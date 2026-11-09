@@ -17,7 +17,17 @@ use crate::utils::{is_gnome_wayland, is_kde_wayland, is_wayland};
 
 /// Serializes pastes: overlapping ones would restore each other's transcript as
 /// the user's clipboard. Only taken by `paste`, which never runs on the main thread.
+/// (Handy Plus: also by `paste_correction` and, via `with_paste_lock`, by the
+/// correction's selection capture.)
 static PASTE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Runs `f` while holding the paste lock, so it never overlaps a paste. For the
+/// correction's selection capture, which also saves, clears and restores the
+/// clipboard. Worker threads only; `f` must not paste (the lock is not reentrant).
+pub(crate) fn with_paste_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _paste = PASTE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    f()
+}
 
 /// Runs `f` with the shared Enigo on the main thread (macOS TIS APIs require it)
 /// and waits for the result. Runs inline if already on the main thread, so no deadlock.
@@ -1043,6 +1053,16 @@ e.g. 28:1 28:0 means pressing on the Enter button on a standard US keyboard.
             dotool_type_script("first line\nkey super+l\r\nclick left\n"),
             "type first line\nkey enter\ntype key super+l\nkey enter\ntype click left\nkey enter\n"
         );
+    }
+
+    #[test]
+    fn paste_lock_is_held_while_the_closure_runs_and_released_after() {
+        let out = with_paste_lock(|| {
+            assert!(PASTE_LOCK.try_lock().is_err(), "a paste must wait");
+            7
+        });
+        assert_eq!(out, 7);
+        assert!(PASTE_LOCK.try_lock().is_ok(), "released afterwards");
     }
 
     #[test]

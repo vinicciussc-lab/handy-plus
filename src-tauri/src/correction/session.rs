@@ -186,9 +186,11 @@ pub fn decide(
     }
 }
 
-/// The shortcut is ignored during a dictation and while a correction runs.
-pub fn should_start(dictation_recording: bool, session_active: bool) -> bool {
-    !dictation_recording && !session_active
+/// The shortcut is ignored while a dictation is anywhere in its pipeline
+/// (recording, transcribing, post-processing or pasting) and while a
+/// correction runs.
+pub fn should_start(dictation_busy: bool, session_active: bool) -> bool {
+    !dictation_busy && !session_active
 }
 
 pub fn check_text(text: &str) -> Result<(), CorrectionErrorCode> {
@@ -399,10 +401,13 @@ pub fn begin(app: &AppHandle) {
     let Some(state) = app.try_state::<CorrectionSessionState>() else {
         return;
     };
-    let recording = app
-        .try_state::<Arc<AudioRecordingManager>>()
-        .is_some_and(|m| m.is_recording());
-    if !should_start(recording, state.active.load(Ordering::SeqCst))
+    // The tray state is set on every dictation start, finish and cancel (even
+    // with no tray icon) and stays busy until the paste is done.
+    let dictation_busy = crate::tray::dictation_in_progress(app)
+        || app
+            .try_state::<Arc<AudioRecordingManager>>()
+            .is_some_and(|m| m.is_recording());
+    if !should_start(dictation_busy, state.active.load(Ordering::SeqCst))
         || state
             .active
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -796,7 +801,12 @@ impl Session {
                 std::thread::sleep(SETTLE_DELAY);
                 crate::clipboard::paste_correction(text, app).map(|()| true)
             } else {
-                crate::clipboard::write_text_to_clipboard(&app, &text).map(|()| false)
+                // Under the paste lock: a dictation paste restoring the
+                // clipboard must not overwrite the correction left there.
+                crate::clipboard::with_paste_lock(|| {
+                    crate::clipboard::write_text_to_clipboard(&app, &text)
+                })
+                .map(|()| false)
             }
         })
         .await;

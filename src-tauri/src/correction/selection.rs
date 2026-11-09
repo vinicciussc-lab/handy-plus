@@ -1,7 +1,7 @@
 //! Copies the user's selection out of the focused app and brings focus back to
 //! it for the paste. The user's clipboard is restored after the copy.
 
-use crate::clipboard::{with_enigo, write_text_to_clipboard};
+use crate::clipboard::{with_enigo, with_paste_lock, write_text_to_clipboard};
 use crate::input;
 use log::{debug, warn};
 use std::time::{Duration, Instant};
@@ -115,6 +115,18 @@ pub fn capture_selection(app: &AppHandle) -> Result<Captured, CaptureError> {
         return Err(CaptureError::KeysHeld);
     }
 
+    // A dictation paste uses the clipboard the same way; never interleave.
+    let text = with_paste_lock(|| copy_and_restore(app))?;
+    if is_blank_selection(&text) {
+        return Err(CaptureError::NothingSelected);
+    }
+    debug!("Captured {} chars of selection", text.chars().count());
+    Ok(Captured { text, hwnd })
+}
+
+/// Saves the clipboard, copies the selection and restores the clipboard.
+/// Returns an empty string when nothing was copied.
+fn copy_and_restore(app: &AppHandle) -> Result<String, CaptureError> {
     let clipboard = app.clipboard();
     let saved_text = clipboard.read_text().ok().filter(|t| !t.is_empty());
     // Same as paste_via_clipboard: decoding an image is only worth it when
@@ -152,11 +164,7 @@ pub fn capture_selection(app: &AppHandle) -> Result<Captured, CaptureError> {
             restore();
         }
     }
-    if is_blank_selection(&text) {
-        return Err(CaptureError::NothingSelected);
-    }
-    debug!("Captured {} chars of selection", text.chars().count());
-    Ok(Captured { text, hwnd })
+    Ok(text)
 }
 
 /// Clears the clipboard, sends Ctrl+C and polls for the copied text. Returns an

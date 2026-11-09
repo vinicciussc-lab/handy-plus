@@ -827,6 +827,7 @@ pub fn run(cli_args: CliArgs) {
             transcription_coordinator::RecordingStateEvent,
             actions::TranscriptionCompleteEvent,
             notices::NoticesChanged,
+            correction::session::CorrectionUpdateEvent,
         ]);
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
@@ -1104,6 +1105,7 @@ pub fn run(cli_args: CliArgs) {
             app.manage(TranscriptionCoordinator::new(app_handle.clone()));
 
             initialize_core_logic(&app_handle);
+            correction::session::init(&app_handle);
 
             // Secure Input monitor (macOS): detects stuck secure input that
             // silently blocks keyed shortcuts, warns the user, and activates
@@ -1212,6 +1214,8 @@ pub fn run(cli_args: CliArgs) {
             }
             show_main_window(app);
         }
+        // Handy Plus: stop the correction model's llama-server.
+        tauri::RunEvent::Exit => correction::session::shutdown(app),
         // No transcription teardown on exit: transcribe.cpp runs only in the
         // worker process, which exits by itself as soon as this process's end
         // of its stdin closes, even if it is hung. Waiting on an unload here

@@ -1067,6 +1067,7 @@ async dismissOverlayNotice() : Promise<void> {
 
 
 export const events = __makeEvents__<{
+correctionUpdateEvent: CorrectionUpdateEvent,
 historyUpdatePayload: HistoryUpdatePayload,
 noticesChanged: NoticesChanged,
 recordingStateEvent: RecordingStateEvent,
@@ -1075,6 +1076,7 @@ streamTextEvent: StreamTextEvent,
 transcriptionCompleteEvent: TranscriptionCompleteEvent,
 transcriptionJob: TranscriptionJob
 }>({
+correctionUpdateEvent: "correction-update-event",
 historyUpdatePayload: "history-update-payload",
 noticesChanged: "notices-changed",
 recordingStateEvent: "recording-state-event",
@@ -1216,6 +1218,17 @@ export type ChineseScript =
 "traditional_hk"
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
 export type CloudModel = { provider_id: string; model: string }
+export type CorrectionErrorCode = "nothing_selected" | "text_too_long" | "no_model_chosen" | "model_missing" | "engine_failed" | "cloud_failed" | 
+/**
+ * Modifier keys were still held, so the selection was not copied.
+ */
+"keys_held" | "clipboard_failed"
+export type CorrectionPhase = "loading" | "generating" | "preview" | "needs_fallback" | "applied" | 
+/**
+ * The original window could not be brought back: the correction is on
+ * the clipboard for the user to paste.
+ */
+"copied" | "error" | "hidden"
 export type CorrectionProvider = { kind: "local" } | ({ kind: "cloud" } & CloudModel)
 export type CorrectionSettings = { provider: CorrectionProvider; models_dir: string; local_model_path: string | null; unload_timeout: ModelUnloadTimeout; 
 /**
@@ -1227,7 +1240,12 @@ fallback: CloudModel | null; style_rules: string; tones: CorrectionTone[];
  */
 last_load_ms: Partial<{ [key in string]: number }> }
 export type CorrectionTone = { id: string; name: string; goal: string }
+/**
+ * Everything the correction panel shows. Sent whenever it changes.
+ */
+export type CorrectionUpdateEvent = { phase: CorrectionPhase; original: string; text: string; load_progress: number | null; gen_progress: number | null; tones: string[]; tone_index: number; model_label: string; elapsed_ms: number | null; error: CorrectionErrorCode | null; fallback_options: FallbackOption[] }
 export type CustomSounds = { start: boolean; stop: boolean }
+export type FallbackOption = "cloud" | "cpu"
 export type GpuDeviceOption = { id: string; name: string; total_vram_mb: number }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; 
 /**

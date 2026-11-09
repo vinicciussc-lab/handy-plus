@@ -57,7 +57,6 @@ impl Running {
     }
 }
 
-#[allow(dead_code)] // wired into app state by a later task
 pub struct LocalEngine {
     binary: PathBuf,
     state: Mutex<Option<Running>>,
@@ -72,7 +71,6 @@ pub struct LocalEngine {
     last_pid: std::sync::atomic::AtomicU32,
 }
 
-#[allow(dead_code)] // wired into app state by a later task
 impl LocalEngine {
     pub fn new(binary: PathBuf) -> Self {
         Self {
@@ -245,6 +243,20 @@ impl LocalEngine {
             return false;
         }
         r.ready
+    }
+
+    /// True when a ready, live server already runs `model` on the same device,
+    /// so `ensure_loaded` would reuse it without loading anything.
+    pub fn serves(&self, model: &Path, gpu: bool) -> bool {
+        let mut guard = self.lock();
+        let Some(r) = guard.as_mut() else {
+            return false;
+        };
+        if r.has_exited() {
+            *guard = None;
+            return false;
+        }
+        r.ready && r.model_path == model && r.gpu == gpu
     }
 
     /// Kills the server unless `busy` is set. `busy` is read (SeqCst) while
@@ -561,5 +573,34 @@ mod tests {
         assert!(e.unload_unless_busy(&busy));
         assert!(!e.is_loaded());
         assert!(!e.unload_unless_busy(&busy), "nothing left to unload");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn serves_only_the_same_ready_model_on_the_same_device() {
+        let e = LocalEngine::new(PathBuf::from("unused"));
+        let model = PathBuf::from(r"D:\m\g.gguf");
+        assert!(!e.serves(&model, true), "nothing loaded");
+        let child = std::process::Command::new(r"C:\Windows\System32\PING.EXE")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        *e.lock() = Some(Running {
+            child,
+            port: 1,
+            model_path: model.clone(),
+            gpu: true,
+            ready: false,
+            last_used: Instant::now(),
+        });
+        assert!(!e.serves(&model, true), "still loading");
+        e.lock().as_mut().unwrap().ready = true;
+        assert!(e.serves(&model, true));
+        assert!(!e.serves(&model, false), "other device");
+        assert!(!e.serves(Path::new("outro.gguf"), true), "other model");
+        e.kill_child_for_test();
+        assert!(!e.serves(&model, true), "dead server");
+        assert!(e.lock().is_none(), "dead server is cleared");
     }
 }

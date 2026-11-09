@@ -7,9 +7,6 @@
 //! as-is (llama-server serves `/chat/completions` as well as `/v1/...`);
 //! cloud providers carry their own `/v1` in `base_url`.
 
-// Only Task 8 (the correction pipeline) calls this module.
-#![allow(dead_code)]
-
 use crate::llm_client::{create_client, report_reqwest_error, send_chat_completion};
 use crate::settings::{PostProcessApiFormat, PostProcessProvider};
 use futures_util::StreamExt;

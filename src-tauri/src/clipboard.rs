@@ -933,7 +933,6 @@ pub(crate) fn correction_paste_method(m: PasteMethod) -> PasteMethod {
 /// Pastes a corrected `text` over the selection in the focused app. Always goes
 /// through the clipboard (which `paste_via_clipboard` restores), never adds a
 /// trailing space or auto-submits. Call from a worker thread, like `paste`.
-#[allow(dead_code)] // wired up by the correction session
 pub fn paste_correction(text: String, app_handle: AppHandle) -> Result<(), String> {
     let _paste = PASTE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let settings = get_settings(&app_handle);

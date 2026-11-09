@@ -11,18 +11,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Free VRAM required on top of the model size before loading it.
-#[allow(dead_code)]
 pub const LOAD_MARGIN_BYTES: u64 = 1_536 * 1024 * 1024;
 /// Below this much free VRAM an idle model is unloaded.
-#[allow(dead_code)]
 pub const IDLE_MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
 
-#[allow(dead_code)]
 const WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Free VRAM of the first NVIDIA GPU, or `None` when NVML is unavailable.
 #[cfg(windows)]
-#[allow(dead_code)]
 pub fn free_vram_bytes() -> Option<u64> {
     use nvml_wrapper::Nvml;
     use std::sync::OnceLock;
@@ -49,14 +45,12 @@ pub fn free_vram_bytes() -> Option<u64> {
 }
 
 #[cfg(not(windows))]
-#[allow(dead_code)]
 pub fn free_vram_bytes() -> Option<u64> {
     None
 }
 
 /// True while a game, a fullscreen app or a presentation owns the screen.
 #[cfg(windows)]
-#[allow(dead_code)]
 pub fn fullscreen_app_active() -> bool {
     use windows::Win32::UI::Shell::{
         SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE,
@@ -75,13 +69,11 @@ pub fn fullscreen_app_active() -> bool {
 }
 
 #[cfg(not(windows))]
-#[allow(dead_code)]
 pub fn fullscreen_app_active() -> bool {
     false
 }
 
 /// Whether the model fits in free VRAM with margin. Unknown free VRAM never blocks.
-#[allow(dead_code)]
 pub fn has_room(free: Option<u64>, model_bytes: u64) -> bool {
     match free {
         Some(free) => free >= model_bytes.saturating_add(LOAD_MARGIN_BYTES),
@@ -90,7 +82,6 @@ pub fn has_room(free: Option<u64>, model_bytes: u64) -> bool {
 }
 
 /// Whether an idle loaded model should be dropped to give the GPU back.
-#[allow(dead_code)]
 pub fn should_unload(
     loaded: bool,
     session_active: bool,
@@ -132,7 +123,6 @@ fn tick(
 /// before clearing the flag. The watcher unloads via
 /// `LocalEngine::unload_unless_busy`, so it either sees the flag and skips, or
 /// unloads first and `ensure_loaded` simply reloads.
-#[allow(dead_code)]
 pub fn spawn_watcher(
     engine: Arc<LocalEngine>,
     session_active: Arc<AtomicBool>,

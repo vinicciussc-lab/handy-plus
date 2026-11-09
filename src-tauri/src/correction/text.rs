@@ -6,7 +6,6 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 /// Longest selection sent to the correction model, in characters.
-#[allow(dead_code)]
 pub const MAX_CORRECTION_CHARS: usize = 8000;
 
 /// Progress is held here until the work is actually finished.
@@ -17,7 +16,6 @@ static DASH_PAUSE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*[—–]\s*").expe
 
 /// Builds `(system, user)` messages: the rules followed by the goal, and the
 /// text to correct.
-#[allow(dead_code)]
 pub fn build_messages(rules: &str, goal: &str, text: &str) -> (String, String) {
     (
         format!("{rules}\n\nObjetivo: {goal}"),
@@ -28,7 +26,6 @@ pub fn build_messages(rules: &str, goal: &str, text: &str) -> (String, String) {
 /// Cleans a model reply: strips a reasoning block and invisible characters,
 /// then trims. Unless the original text used dashes, dash pauses become
 /// commas, since models tend to add them.
-#[allow(dead_code)]
 pub fn clean_output(original: &str, raw: &str) -> String {
     let cleaned = strip_invisible_chars(strip_think_block(raw));
     let cleaned = cleaned.trim();
@@ -41,7 +38,6 @@ pub fn clean_output(original: &str, raw: &str) -> String {
 
 /// Progress while generating, estimated from characters produced against the
 /// input length. Capped at 0.95 until the generation really finishes.
-#[allow(dead_code)]
 pub fn generation_progress(generated_chars: usize, input_chars: usize) -> f32 {
     if input_chars == 0 {
         return PROGRESS_CAP;
@@ -51,7 +47,6 @@ pub fn generation_progress(generated_chars: usize, input_chars: usize) -> f32 {
 
 /// Progress while loading the model, estimated from the time the previous load
 /// took. `None` when there is no previous load to compare with.
-#[allow(dead_code)]
 pub fn load_progress(elapsed_ms: u64, expected_ms: Option<u64>) -> Option<f32> {
     let expected_ms = expected_ms?;
     if expected_ms == 0 {

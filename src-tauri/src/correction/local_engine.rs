@@ -247,6 +247,26 @@ impl LocalEngine {
         r.ready
     }
 
+    /// Kills the server unless `busy` is set. `busy` is read (SeqCst) while
+    /// holding the same state lock `ensure_loaded` uses, so a session that sets
+    /// its flag before calling `ensure_loaded` is never unloaded under it:
+    /// either this sees the flag and skips, or it unloads first and
+    /// `ensure_loaded` reloads. The caller must also `touch()` when the session
+    /// ends, before clearing the flag. Returns whether it unloaded.
+    pub fn unload_unless_busy(&self, busy: &std::sync::atomic::AtomicBool) -> bool {
+        let mut guard = self.lock();
+        if busy.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        match guard.take() {
+            Some(mut r) => {
+                r.kill();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Marks use and restarts the idle clock.
     pub fn touch(&self) {
         if let Some(r) = self.lock().as_mut() {
@@ -514,5 +534,32 @@ mod tests {
             !String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()),
             "child {pid} still running"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unload_unless_busy_respects_the_flag() {
+        use std::sync::atomic::AtomicBool;
+        let e = LocalEngine::new(PathBuf::from("unused"));
+        let child = std::process::Command::new(r"C:\Windows\System32\PING.EXE")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        *e.lock() = Some(Running {
+            child,
+            port: 1,
+            model_path: PathBuf::new(),
+            gpu: false,
+            ready: true,
+            last_used: Instant::now(),
+        });
+        let busy = AtomicBool::new(true);
+        assert!(!e.unload_unless_busy(&busy));
+        assert!(e.is_loaded(), "busy session must keep the server");
+        busy.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(e.unload_unless_busy(&busy));
+        assert!(!e.is_loaded());
+        assert!(!e.unload_unless_busy(&busy), "nothing left to unload");
     }
 }

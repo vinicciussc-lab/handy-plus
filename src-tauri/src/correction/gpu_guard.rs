@@ -104,27 +104,21 @@ pub fn should_unload(
 }
 
 /// One watcher pass.
-#[allow(dead_code)]
 fn tick(
     engine: &LocalEngine,
     session_active: &AtomicBool,
     unload_after_secs: &impl Fn() -> Option<u64>,
 ) {
-    let active = session_active.load(Ordering::SeqCst);
-    if should_unload(
-        engine.is_loaded(),
-        active,
-        fullscreen_app_active(),
-        free_vram_bytes(),
-    ) {
-        debug!("GPU guard: unloading correction model");
-        engine.unload();
-    } else if !active {
-        if let (Some(idle), Some(limit)) = (engine.idle_for(), unload_after_secs()) {
-            if idle >= Duration::from_secs(limit) {
-                debug!("GPU guard: unloading idle correction model");
-                engine.unload();
-            }
+    if session_active.load(Ordering::SeqCst) || !engine.is_loaded() {
+        return; // nothing to unload, or a correction is in progress
+    }
+    if should_unload(true, false, fullscreen_app_active(), free_vram_bytes()) {
+        if engine.unload_unless_busy(session_active) {
+            debug!("GPU guard: unloaded correction model (GPU needed elsewhere)");
+        }
+    } else if let (Some(idle), Some(limit)) = (engine.idle_for(), unload_after_secs()) {
+        if idle >= Duration::from_secs(limit) && engine.unload_unless_busy(session_active) {
+            debug!("GPU guard: unloaded idle correction model");
         }
     }
 }
@@ -132,6 +126,12 @@ fn tick(
 /// Starts the watcher thread (lives as long as the app). Every 2 s it unloads
 /// the model for fullscreen apps / low VRAM, or after the idle timeout
 /// (`None` = never, `0` = immediately). Never touches a model in use.
+///
+/// Contract for the session owner: set `session_active = true` (SeqCst) BEFORE
+/// calling `ensure_loaded`, and call `engine.touch()` when the session ends,
+/// before clearing the flag. The watcher unloads via
+/// `LocalEngine::unload_unless_busy`, so it either sees the flag and skips, or
+/// unloads first and `ensure_loaded` simply reloads.
 #[allow(dead_code)]
 pub fn spawn_watcher(
     engine: Arc<LocalEngine>,

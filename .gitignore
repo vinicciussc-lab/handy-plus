@@ -51,3 +51,6 @@ __pycache__/
 
 # Locally built speech engine (scripts/build-transcribe.cmd)
 .native/
+
+# llama.cpp helper binary (scripts/fetch-llama-server.ps1)
+src-tauri/resources/llama-server/

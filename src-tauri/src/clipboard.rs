@@ -21,7 +21,7 @@ static PASTE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Runs `f` with the shared Enigo on the main thread (macOS TIS APIs require it)
 /// and waits for the result. Runs inline if already on the main thread, so no deadlock.
-fn with_enigo<T: Send + 'static>(
+pub(crate) fn with_enigo<T: Send + 'static>(
     app_handle: &AppHandle,
     f: impl FnOnce(&mut Enigo) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -47,7 +47,7 @@ fn with_enigo<T: Send + 'static>(
         .map_err(|_| "Main thread dropped the input request".to_string())?
 }
 
-fn write_text_to_clipboard(app_handle: &AppHandle, text: &str) -> Result<(), String> {
+pub(crate) fn write_text_to_clipboard(app_handle: &AppHandle, text: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     if is_wayland() && is_wl_copy_available() {
         info!("Using wl-copy for clipboard write on Wayland");
@@ -920,6 +920,32 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Paste method used to put a correction back: the user's clipboard-based method
+/// when it is one, otherwise Ctrl+V. Direct typing, no-op and external scripts
+/// would not replace the selection reliably.
+pub(crate) fn correction_paste_method(m: PasteMethod) -> PasteMethod {
+    match m {
+        PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => m,
+        _ => PasteMethod::CtrlV,
+    }
+}
+
+/// Pastes a corrected `text` over the selection in the focused app. Always goes
+/// through the clipboard (which `paste_via_clipboard` restores), never adds a
+/// trailing space or auto-submits. Call from a worker thread, like `paste`.
+#[allow(dead_code)] // wired up by the correction session
+pub fn paste_correction(text: String, app_handle: AppHandle) -> Result<(), String> {
+    let _paste = PASTE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let settings = get_settings(&app_handle);
+    paste_via_clipboard(
+        &text,
+        &app_handle,
+        &correction_paste_method(settings.paste_method),
+        settings.paste_delay_ms,
+        settings.paste_delay_after_ms,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,6 +1044,25 @@ e.g. 28:1 28:0 means pressing on the Enter button on a standard US keyboard.
             dotool_type_script("first line\nkey super+l\r\nclick left\n"),
             "type first line\nkey enter\ntype key super+l\nkey enter\ntype click left\nkey enter\n"
         );
+    }
+
+    #[test]
+    fn correction_keeps_clipboard_paste_methods_and_defaults_to_ctrl_v() {
+        assert_eq!(
+            correction_paste_method(PasteMethod::CtrlShiftV),
+            PasteMethod::CtrlShiftV
+        );
+        assert_eq!(
+            correction_paste_method(PasteMethod::ShiftInsert),
+            PasteMethod::ShiftInsert
+        );
+        for m in [
+            PasteMethod::Direct,
+            PasteMethod::None,
+            PasteMethod::ExternalScript,
+        ] {
+            assert_eq!(correction_paste_method(m), PasteMethod::CtrlV);
+        }
     }
 
     #[test]

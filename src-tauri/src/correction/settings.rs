@@ -1,6 +1,7 @@
 //! Persistent settings for the text correction feature (separate store file).
 
 use crate::settings::ModelUnloadTimeout;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
@@ -103,10 +104,44 @@ pub fn get_correction_settings(app: &AppHandle) -> CorrectionSettings {
     let store = app
         .store(crate::portable::store_path(CORRECTION_STORE_PATH))
         .expect("Failed to initialize correction store");
-    store
-        .get(CORRECTION_STORE_KEY)
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default()
+    match store.get(CORRECTION_STORE_KEY) {
+        Some(value) => parse_or_salvage(&value),
+        None => CorrectionSettings::default(),
+    }
+}
+
+/// Parses stored settings; if the whole value is invalid, keeps every field
+/// that is individually valid and defaults only the broken ones.
+fn parse_or_salvage(stored: &serde_json::Value) -> CorrectionSettings {
+    match serde_json::from_value::<CorrectionSettings>(stored.clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to parse correction settings ({e}); salvaging valid fields");
+            salvage(stored)
+        }
+    }
+}
+
+fn salvage(stored: &serde_json::Value) -> CorrectionSettings {
+    let Some(stored_map) = stored.as_object() else {
+        warn!("Stored correction settings are not a JSON object; using defaults");
+        return CorrectionSettings::default();
+    };
+    let mut merged =
+        serde_json::to_value(CorrectionSettings::default()).expect("defaults serialize");
+    for (key, value) in stored_map {
+        let map = merged.as_object_mut().expect("merged stays an object");
+        let previous = map.insert(key.clone(), value.clone());
+        if serde_json::from_value::<CorrectionSettings>(merged.clone()).is_err() {
+            warn!("Dropping invalid correction settings field '{key}', keeping its default");
+            let map = merged.as_object_mut().expect("merged stays an object");
+            match previous {
+                Some(previous) => map.insert(key.clone(), previous),
+                None => map.remove(key),
+            };
+        }
+    }
+    serde_json::from_value(merged).unwrap_or_default()
 }
 
 pub fn write_correction_settings(app: &AppHandle, s: &CorrectionSettings) {
@@ -166,6 +201,26 @@ mod tests {
     fn settings_missing_fields_fall_back_to_defaults() {
         let s: CorrectionSettings = serde_json::from_str(r#"{"models_dir":"E:\\m"}"#).unwrap();
         assert_eq!(s.models_dir, r"E:\m");
+        assert_eq!(s.tones.len(), 4);
+    }
+
+    #[test]
+    fn one_invalid_field_keeps_the_other_stored_fields() {
+        let stored = serde_json::json!({
+            "unload_timeout": "nope",
+            "models_dir": "E:\\m",
+            "tones": [{"id": "x", "name": "Meu", "goal": "g"}],
+        });
+        let s = parse_or_salvage(&stored);
+        assert_eq!(s.unload_timeout, ModelUnloadTimeout::Min5);
+        assert_eq!(s.models_dir, r"E:\m");
+        assert_eq!(s.tones.len(), 1);
+        assert_eq!(s.tones[0].name, "Meu");
+    }
+
+    #[test]
+    fn non_object_value_falls_back_to_defaults() {
+        let s = parse_or_salvage(&serde_json::json!(42));
         assert_eq!(s.tones.len(), 4);
     }
 }

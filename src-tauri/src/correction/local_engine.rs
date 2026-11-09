@@ -63,6 +63,13 @@ pub struct LocalEngine {
     state: Mutex<Option<Running>>,
     /// Serializes `ensure_loaded` so two callers never start two servers.
     load_lock: tokio::sync::Mutex<()>,
+    /// Children are assigned to this job so Windows kills them if the app dies.
+    #[cfg(windows)]
+    job: Option<job::KillOnCloseJob>,
+    #[cfg(test)]
+    args_override: Option<Vec<String>>,
+    #[cfg(test)]
+    last_pid: std::sync::atomic::AtomicU32,
 }
 
 #[allow(dead_code)] // wired into app state by a later task
@@ -72,6 +79,12 @@ impl LocalEngine {
             binary,
             state: Mutex::new(None),
             load_lock: tokio::sync::Mutex::new(()),
+            #[cfg(windows)]
+            job: job::KillOnCloseJob::new(),
+            #[cfg(test)]
+            args_override: None,
+            #[cfg(test)]
+            last_pid: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -112,7 +125,14 @@ impl LocalEngine {
 
         let port = free_port().map_err(|e| EngineError::StartFailed(e.to_string()))?;
         let mut cmd = Command::new(&self.binary);
-        cmd.args(server_args(model, port, gpu))
+        #[cfg(test)]
+        let args = self
+            .args_override
+            .clone()
+            .unwrap_or_else(|| server_args(model, port, gpu));
+        #[cfg(not(test))]
+        let args = server_args(model, port, gpu);
+        cmd.args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -127,6 +147,15 @@ impl LocalEngine {
         let child = cmd
             .spawn()
             .map_err(|e| EngineError::StartFailed(e.to_string()))?;
+        #[cfg(test)]
+        self.last_pid
+            .store(child.id(), std::sync::atomic::Ordering::Relaxed);
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            if let Err(e) = job.assign(&child) {
+                log::warn!("could not add llama-server to the kill-on-close job: {e}");
+            }
+        }
         *self.lock() = Some(Running {
             child,
             port,
@@ -136,6 +165,12 @@ impl LocalEngine {
             last_used: Instant::now(),
         });
 
+        // Cancelled mid-load (future dropped): kill the half-loaded server.
+        let mut guard_on_drop = LoadGuard {
+            engine: self,
+            port,
+            armed: true,
+        };
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
             .build()
@@ -173,6 +208,9 @@ impl LocalEngine {
                         r.ready = true;
                         r.last_used = Instant::now();
                     }
+                    drop(guard);
+                    guard_on_drop.armed = false;
+                    on_progress(Some(1.0));
                     return Ok((base_url(port), started.elapsed().as_millis() as u64));
                 }
             }
@@ -229,6 +267,78 @@ impl LocalEngine {
         if let Some(r) = self.lock().as_mut() {
             let _ = r.child.kill();
             let _ = r.child.wait();
+        }
+    }
+}
+
+struct LoadGuard<'a> {
+    engine: &'a LocalEngine,
+    port: u16,
+    armed: bool,
+}
+
+impl Drop for LoadGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.engine.kill_port(self.port);
+        }
+    }
+}
+
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    /// A job object that kills every process in it when its last handle closes.
+    pub struct KillOnCloseJob(HANDLE);
+
+    // The handle is only used through thread-safe Win32 calls.
+    unsafe impl Send for KillOnCloseJob {}
+    unsafe impl Sync for KillOnCloseJob {}
+
+    impl KillOnCloseJob {
+        pub fn new() -> Option<Self> {
+            unsafe {
+                let handle = match CreateJobObjectW(None, None) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        log::warn!("CreateJobObjectW failed: {e}");
+                        return None;
+                    }
+                };
+                let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if let Err(e) = SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const _,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) {
+                    log::warn!("SetInformationJobObject failed: {e}");
+                    let _ = CloseHandle(handle);
+                    return None;
+                }
+                Some(Self(handle))
+            }
+        }
+
+        pub fn assign(&self, child: &Child) -> windows::core::Result<()> {
+            unsafe { AssignProcessToJobObject(self.0, HANDLE(child.as_raw_handle())) }
+        }
+    }
+
+    impl Drop for KillOnCloseJob {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
         }
     }
 }
@@ -375,5 +485,34 @@ mod tests {
         );
         e.unload();
         assert!(!e.is_loaded());
+    }
+
+    /// Dropping `ensure_loaded` mid-load must kill the half-started server.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn cancelled_load_kills_child_and_clears_state() {
+        let ping = PathBuf::from(r"C:\Windows\System32\PING.EXE");
+        let mut e = LocalEngine::new(ping);
+        e.args_override = Some(vec!["-n".into(), "60".into(), "127.0.0.1".into()]);
+        let model = std::env::current_exe().unwrap(); // any existing file
+        let r = tokio::time::timeout(
+            Duration::from_millis(800),
+            e.ensure_loaded(&model, false, None, |_| {}),
+        )
+        .await;
+        assert!(r.is_err(), "load should still be pending");
+        let pid = e.last_pid.load(std::sync::atomic::Ordering::Relaxed);
+        assert_ne!(pid, 0);
+        assert!(!e.is_loaded());
+        assert!(e.idle_for().is_none());
+        assert!(e.lock().is_none(), "state must be cleared");
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()),
+            "child {pid} still running"
+        );
     }
 }

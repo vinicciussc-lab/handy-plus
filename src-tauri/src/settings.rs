@@ -775,6 +775,15 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             supports_structured_output: true,
             api_format: PostProcessApiFormat::OpenAi,
         },
+        PostProcessProvider {
+            id: "gemini".to_string(),
+            label: "Gemini".to_string(),
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+            allow_base_url_edit: false,
+            models_endpoint: Some("/models".to_string()),
+            supports_structured_output: false,
+            api_format: PostProcessApiFormat::OpenAi,
+        },
     ];
 
     // Note: We always include Apple Intelligence on macOS ARM64 without checking availability
@@ -986,6 +995,17 @@ pub fn get_default_settings() -> AppSettings {
                 .to_string(),
             default_binding: default_post_process_shortcut.to_string(),
             current_binding: default_post_process_shortcut.to_string(),
+        },
+    );
+    // Left of Z on ABNT2 keyboards (VK_OEM_102). handy-keys names it "section".
+    bindings.insert(
+        "correct_selection".to_string(),
+        ShortcutBinding {
+            id: "correct_selection".to_string(),
+            name: "Correct Selection".to_string(),
+            description: "Corrects the selected text with AI.".to_string(),
+            default_binding: "ctrl+section".to_string(),
+            current_binding: "ctrl+section".to_string(),
         },
     );
     bindings.insert(
@@ -1432,6 +1452,32 @@ pub fn get_recording_retention_period(app: &AppHandle) -> RecordingRetentionPeri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gemini_provider_is_available() {
+        let p = default_post_process_providers()
+            .into_iter()
+            .find(|p| p.id == "gemini")
+            .unwrap();
+        assert_eq!(
+            p.base_url,
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        );
+        assert_eq!(p.api_format, PostProcessApiFormat::OpenAi);
+    }
+
+    #[test]
+    fn correct_selection_binding_exists() {
+        assert!(get_default_settings()
+            .bindings
+            .contains_key("correct_selection"));
+    }
+
+    #[test]
+    fn correct_selection_default_parses_as_handy_keys_hotkey() {
+        let b = &get_default_settings().bindings["correct_selection"];
+        assert!(b.default_binding.parse::<handy_keys::Hotkey>().is_ok());
+    }
+
     use super::*;
 
     #[test]

@@ -13,6 +13,17 @@ async changeBinding(id: string, binding: string) : Promise<Result<BindingRespons
     else return { status: "error", error: e  as any };
 }
 },
+async getCorrectionSettingsCmd() : Promise<CorrectionSettings> {
+    return await TAURI_INVOKE("get_correction_settings_cmd");
+},
+async setCorrectionSettingsCmd(settings: CorrectionSettings) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_correction_settings_cmd", { settings }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async resetBinding(id: string) : Promise<Result<BindingResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reset_binding", { id }) };
@@ -1023,10 +1034,8 @@ async updateRecordingRetentionPeriod(period: string) : Promise<Result<null, stri
 }
 },
 /**
- * Checks if the Mac is a laptop by detecting battery presence
- * 
- * This uses pmset to check for battery information.
- * Returns true if a battery is detected (laptop), false otherwise (desktop)
+ * Stub implementation for non-macOS platforms
+ * Always returns false since laptop detection is macOS-specific
  */
 async isLaptop() : Promise<Result<boolean, string>> {
     try {
@@ -1206,6 +1215,18 @@ export type ChineseScript =
  */
 "traditional_hk"
 export type ClipboardHandling = "dont_modify" | "copy_to_clipboard"
+export type CloudModel = { provider_id: string; model: string }
+export type CorrectionProvider = { kind: "local" } | ({ kind: "cloud" } & CloudModel)
+export type CorrectionSettings = { provider: CorrectionProvider; models_dir: string; local_model_path: string | null; unload_timeout: ModelUnloadTimeout; 
+/**
+ * Backup cloud provider used when the local model cannot be loaded.
+ */
+fallback: CloudModel | null; style_rules: string; tones: CorrectionTone[]; 
+/**
+ * Duration of the last model load, in milliseconds, keyed by model path.
+ */
+last_load_ms: Partial<{ [key in string]: number }> }
+export type CorrectionTone = { id: string; name: string; goal: string }
 export type CustomSounds = { start: boolean; stop: boolean }
 export type GpuDeviceOption = { id: string; name: string; total_vram_mb: number }
 export type HistoryEntry = { id: number; file_name: string; timestamp: number; saved: boolean; title: string; transcription_text: string; post_processed_text: string | null; post_process_prompt: string | null; post_process_requested: boolean; 

@@ -29,6 +29,8 @@ pub struct ChatTarget {
 pub enum SseItem {
     Delta(String),
     Done,
+    /// An `error` object sent inside the stream (some providers do this over HTTP 200).
+    Error(String),
 }
 
 /// Incremental parser for a server-sent-events chat stream. Only
@@ -52,6 +54,14 @@ impl SseParser {
                 if data == "[DONE]" {
                     items.push(SseItem::Done);
                 } else if let Ok(v) = serde_json::from_str::<Value>(data) {
+                    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
+                        let msg = err["message"]
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| err.to_string());
+                        items.push(SseItem::Error(msg));
+                        continue;
+                    }
                     if let Some(text) = v["choices"][0]["delta"]["content"].as_str() {
                         if !text.is_empty() {
                             items.push(SseItem::Delta(text.to_string()));
@@ -62,6 +72,56 @@ impl SseParser {
         }
         items
     }
+
+    /// Call at end of stream: flushes a final event that lacks its blank line.
+    pub fn finish(&mut self) -> Vec<SseItem> {
+        self.feed(
+            "
+
+",
+        )
+    }
+}
+
+/// Decodes as much of `pending` as is valid UTF-8 and removes it from the buffer.
+/// An incomplete multi-byte tail is kept for the next chunk; genuinely invalid
+/// bytes are replaced rather than stalling the stream.
+fn decode_utf8_chunk(pending: &mut Vec<u8>) -> String {
+    let mut out = String::new();
+    loop {
+        match std::str::from_utf8(pending) {
+            Ok(s) => {
+                out.push_str(s);
+                pending.clear();
+                return out;
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                out.push_str(&String::from_utf8_lossy(&pending[..valid]));
+                match e.error_len() {
+                    Some(bad) => {
+                        out.push(char::REPLACEMENT_CHARACTER);
+                        pending.drain(..valid + bad);
+                    }
+                    None => {
+                        pending.drain(..valid);
+                        return out;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A stream is only a success if it said `[DONE]` and produced text.
+fn finish_reply(full: String, done: bool) -> Result<String, String> {
+    if !done {
+        return Err("The reply stream ended before it was complete".to_string());
+    }
+    if full.trim().is_empty() {
+        return Err("The model returned no text".to_string());
+    }
+    Ok(full)
 }
 
 fn request_body(target: &ChatTarget, system: &str, user: &str) -> Value {
@@ -136,28 +196,39 @@ pub async fn stream_chat(
     let mut parser = SseParser::default();
     let mut pending: Vec<u8> = Vec::new();
     let mut full = String::new();
+    let mut done = false;
     let mut stream = response.bytes_stream();
     'outer: while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| report_reqwest_error("Stream read failed", &e))?;
         pending.extend_from_slice(&chunk);
-        // A multi-byte character can be split across network chunks.
-        let valid = match std::str::from_utf8(&pending) {
-            Ok(_) => pending.len(),
-            Err(e) => e.valid_up_to(),
-        };
-        let text = String::from_utf8_lossy(&pending[..valid]).into_owned();
-        pending.drain(..valid);
+        let text = decode_utf8_chunk(&mut pending);
         for item in parser.feed(&text) {
             match item {
                 SseItem::Delta(d) => {
                     on_delta(&d);
                     full.push_str(&d);
                 }
-                SseItem::Done => break 'outer,
+                SseItem::Done => {
+                    done = true;
+                    break 'outer;
+                }
+                SseItem::Error(e) => return Err(format!("The provider reported an error: {e}")),
             }
         }
     }
-    Ok(full)
+    if !done {
+        for item in parser.finish() {
+            match item {
+                SseItem::Delta(d) => {
+                    on_delta(&d);
+                    full.push_str(&d);
+                }
+                SseItem::Done => done = true,
+                SseItem::Error(e) => return Err(format!("The provider reported an error: {e}")),
+            }
+        }
+    }
+    finish_reply(full, done)
 }
 
 #[cfg(test)]
@@ -226,6 +297,123 @@ mod tests {
             "U",
         );
         assert!(b.get("chat_template_kwargs").is_none() && b.get("top_k").is_none());
+    }
+
+    #[test]
+    fn utf8_char_split_across_chunks_is_kept_whole() {
+        let bytes = "ã".as_bytes(); // 2 bytes
+        let mut pending = bytes[..1].to_vec();
+        assert_eq!(decode_utf8_chunk(&mut pending), "");
+        assert_eq!(pending.len(), 1);
+        pending.extend_from_slice(&bytes[1..]);
+        assert_eq!(decode_utf8_chunk(&mut pending), "ã");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn invalid_utf8_is_replaced_instead_of_stalling() {
+        let mut pending = vec![b'a', 0xFF, b'b'];
+        assert_eq!(decode_utf8_chunk(&mut pending), "a\u{FFFD}b");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn crlf_events_parse_even_when_split_across_chunks() {
+        let mut p = SseParser::default();
+        let mut out = p.feed("data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\r\n\r");
+        out.extend(p.feed("\ndata: [DONE]\r\n\r\n"));
+        assert_eq!(out, vec![SseItem::Delta("A".into()), SseItem::Done]);
+    }
+
+    #[test]
+    fn unterminated_final_event_is_flushed_by_finish() {
+        let mut p = SseParser::default();
+        assert!(p
+            .feed("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}")
+            .is_empty());
+        assert_eq!(p.finish(), vec![SseItem::Delta("x".into())]);
+    }
+
+    #[test]
+    fn in_stream_error_event_is_surfaced() {
+        let mut p = SseParser::default();
+        let out = p.feed("data: {\"error\":{\"message\":\"x\"}}\n\n");
+        assert_eq!(out, vec![SseItem::Error("x".into())]);
+    }
+
+    #[test]
+    fn stream_without_done_or_without_text_is_an_error() {
+        assert!(finish_reply("partial".into(), false).is_err());
+        assert!(finish_reply(String::new(), true).is_err());
+        assert_eq!(finish_reply("ok".into(), true), Ok("ok".to_string()));
+    }
+
+    async fn serve(status: &str, body: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let resp = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = s.read(&mut buf).await;
+            s.write_all(resp.as_bytes()).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn stream_chat_collects_deltas_and_requires_done() {
+        let ok = serve(
+            "200 OK",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Oi\"}}]}\n\ndata: [DONE]\n\n",
+        )
+        .await;
+        let t = ChatTarget {
+            base_url: ok,
+            ..test_target()
+        };
+        let mut seen = String::new();
+        let r = stream_chat(&t, "S", "U", |d| seen.push_str(d)).await;
+        assert_eq!(r, Ok("Oi".to_string()));
+        assert_eq!(seen, "Oi");
+
+        let cut = serve(
+            "200 OK",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Oi\"}}]}\n\n",
+        )
+        .await;
+        let t = ChatTarget {
+            base_url: cut,
+            ..test_target()
+        };
+        assert!(stream_chat(&t, "S", "U", |_| {}).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_chat_reports_http_and_in_stream_errors() {
+        let bad = serve("500 Internal Server Error", "boom").await;
+        let t = ChatTarget {
+            base_url: bad,
+            ..test_target()
+        };
+        let e = stream_chat(&t, "S", "U", |_| {}).await.unwrap_err();
+        assert!(e.contains("500") && e.contains("boom"), "{e}");
+
+        let inband = serve(
+            "200 OK",
+            "data: {\"error\":{\"message\":\"quota out\"}}\n\n",
+        )
+        .await;
+        let t = ChatTarget {
+            base_url: inband,
+            ..test_target()
+        };
+        let e = stream_chat(&t, "S", "U", |_| {}).await.unwrap_err();
+        assert!(e.contains("quota out"), "{e}");
     }
 
     const SPEC_TEXTS: [&str; 3] = [

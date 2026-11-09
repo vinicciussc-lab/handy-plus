@@ -251,7 +251,10 @@ fn shared_client() -> Result<&'static reqwest::Client, String> {
 }
 
 /// Create an HTTP client with provider-specific headers
-pub(crate) fn create_client(provider: &PostProcessProvider, api_key: &str) -> Result<ProviderClient, String> {
+pub(crate) fn create_client(
+    provider: &PostProcessProvider,
+    api_key: &str,
+) -> Result<ProviderClient, String> {
     Ok(ProviderClient {
         client: shared_client()?,
         headers: build_headers(provider, api_key)?,

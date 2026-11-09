@@ -9,6 +9,7 @@ mod chinese_script;
 pub mod cli;
 mod clipboard;
 mod commands;
+mod correction;
 pub mod engine_supervisor;
 mod helpers;
 mod input;
@@ -951,6 +952,26 @@ pub fn run(cli_args: CliArgs) {
                 utils::env_flag_enabled("HANDY_KEEP_VULKAN_IMPLICIT_LAYERS"),
             );
             system_languages::log_system_languages();
+
+            // First run of Handy Plus: bring over settings and models from Handy.
+            // Must happen before any get_settings call.
+            if !portable::is_portable() {
+                match (
+                    app.path().data_dir(),
+                    portable::app_data_dir(app.handle()),
+                ) {
+                    (Ok(roaming), Ok(dst)) => {
+                        match correction::import::import_from_handy(
+                            &roaming.join("com.pais.handy"),
+                            &dst,
+                        ) {
+                            Ok(outcome) => log::info!("Handy import: {:?}", outcome),
+                            Err(e) => log::warn!("Handy import failed: {}", e),
+                        }
+                    }
+                    _ => log::warn!("Handy import skipped: could not resolve data dirs"),
+                }
+            }
 
             specta_builder.mount_events(app);
 

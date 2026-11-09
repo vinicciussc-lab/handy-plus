@@ -5,6 +5,10 @@ use clap::Parser;
 use handy_app_lib::CliArgs;
 
 fn main() {
+    // Handy Plus is a personal fork: the updater would download the official
+    // Handy over it.
+    std::env::set_var("HANDY_DISABLE_UPDATER", "1");
+
     handy_app_lib::webkit_renderer::apply();
 
     #[cfg(target_os = "windows")]

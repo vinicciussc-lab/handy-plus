@@ -55,6 +55,11 @@ const OVERLAY_HEIGHT: f64 = 50.0;
 const OVERLAY_STREAM_WIDTH: f64 = 400.0;
 const OVERLAY_STREAM_HEIGHT: f64 = 120.0;
 
+// Handy Plus: the text correction panel (progress, preview and tone list).
+const CORRECTION_STATE: &str = "correction";
+const CORRECTION_WIDTH: f64 = 480.0;
+const CORRECTION_HEIGHT: f64 = 260.0;
+
 const NOTICE_STATE: &str = "notice";
 const LIVE_NOTICE_STATE: &str = "live_notice";
 
@@ -77,7 +82,9 @@ fn notice_state(session_is_live: bool) -> &'static str {
 
 /// Overlay window size (logical) for a given UI state.
 fn overlay_dimensions(state: &str) -> (f64, f64) {
-    if is_live_state(state) {
+    if state == CORRECTION_STATE {
+        (CORRECTION_WIDTH, CORRECTION_HEIGHT)
+    } else if is_live_state(state) {
         (OVERLAY_STREAM_WIDTH, OVERLAY_STREAM_HEIGHT)
     } else {
         (OVERLAY_WIDTH, OVERLAY_HEIGHT)
@@ -308,8 +315,10 @@ fn current_overlay_logical_size(window: &tauri::webview::WebviewWindow) -> Optio
     Some((size.width as f64 / scale, size.height as f64 / scale))
 }
 
+/// Logical size of the overlay's current state, for repositioning it.
 #[cfg(target_os = "windows")]
-static WINDOWS_OVERLAY_IS_STREAMING: AtomicBool = AtomicBool::new(false);
+static WINDOWS_OVERLAY_SIZE: std::sync::Mutex<(f64, f64)> =
+    std::sync::Mutex::new((OVERLAY_WIDTH, OVERLAY_HEIGHT));
 
 /// Windows accessibility text size (Settings > Accessibility > Text size), a
 /// separate axis from display scaling that WebView2 applies as a document zoom.
@@ -562,7 +571,11 @@ fn show_overlay_state_on_main(app_handle: &AppHandle, state: &str) {
             let _ =
                 overlay_window.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
             #[cfg(target_os = "windows")]
-            WINDOWS_OVERLAY_IS_STREAMING.store(is_live_state(state), Ordering::Relaxed);
+            {
+                *WINDOWS_OVERLAY_SIZE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = (width, height);
+            }
             let size_elapsed = size_started.elapsed();
 
             let pos_started = std::time::Instant::now();
@@ -654,6 +667,11 @@ pub fn show_processing_overlay(app_handle: &AppHandle) {
     show_overlay_state(app_handle, "processing");
 }
 
+/// Shows the larger text correction panel (Handy Plus).
+pub fn show_correction_overlay(app_handle: &AppHandle) {
+    show_overlay_state(app_handle, CORRECTION_STATE);
+}
+
 /// Shows `notice` in place of the session's overlay and fades it after
 /// [`NOTICE_HOLD`] unless something newer has shown. With the overlay off, it
 /// still hides the session's overlay in case the setting changed mid-session.
@@ -717,12 +735,9 @@ fn update_overlay_position_on_main(app_handle: &AppHandle) {
 
         #[cfg(target_os = "windows")]
         {
-            let state = if WINDOWS_OVERLAY_IS_STREAMING.load(Ordering::Relaxed) {
-                "streaming"
-            } else {
-                "recording"
-            };
-            let (width, height) = overlay_dimensions(state);
+            let (width, height) = *WINDOWS_OVERLAY_SIZE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if let Err(error) = place_windows_overlay(app_handle, &overlay_window, width, height) {
                 log::error!("Failed to update recording overlay position: {error}");
             }
@@ -847,6 +862,18 @@ pub fn emit_levels(app_handle: &AppHandle, levels: &[f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn correction_state_uses_the_large_panel() {
+        assert_eq!(
+            overlay_dimensions("correction"),
+            (CORRECTION_WIDTH, CORRECTION_HEIGHT)
+        );
+        assert_eq!(
+            overlay_dimensions("recording"),
+            (OVERLAY_WIDTH, OVERLAY_HEIGHT)
+        );
+    }
 
     #[test]
     fn a_notice_keeps_the_size_of_its_session() {

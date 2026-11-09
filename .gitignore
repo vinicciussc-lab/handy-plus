@@ -48,3 +48,6 @@ __pycache__/
 
 # Brainstorming mockups
 .superpowers/
+
+# Locally built speech engine (scripts/build-transcribe.cmd)
+.native/

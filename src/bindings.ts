@@ -1271,7 +1271,11 @@ sounds?: boolean;
 /**
  * After some typing and a pause, a pill shows the correction shortcut.
  */
-typing_hint?: boolean }
+typing_hint?: boolean; 
+/**
+ * Typing in any program starts loading the local model in the background.
+ */
+preload_on_typing?: boolean }
 export type CorrectionTone = { id: string; name: string; goal: string; kind?: ToneKind }
 /**
  * Everything the correction panel shows. Sent whenever it changes.

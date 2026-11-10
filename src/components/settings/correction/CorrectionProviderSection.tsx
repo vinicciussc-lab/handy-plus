@@ -10,6 +10,7 @@ import {
   type ModelUnloadTimeout,
 } from "@/bindings";
 import { Dropdown, SettingContainer, SettingsGroup } from "@/components/ui";
+import { ToggleSwitch } from "@/components/ui/ToggleSwitch";
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
 import { useSettings } from "../../../hooks/useSettings";
@@ -312,6 +313,15 @@ export const CorrectionProviderSection: React.FC<
                 }
               />
             </SettingContainer>
+
+            <ToggleSwitch
+              checked={settings.preload_on_typing ?? true}
+              onChange={(preload_on_typing) => onChange({ preload_on_typing })}
+              label={t("settings.correction.local.preload.label")}
+              description={t("settings.correction.local.preload.description")}
+              descriptionMode="tooltip"
+              grouped={true}
+            />
           </>
         ) : (
           <CloudFields

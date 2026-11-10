@@ -943,6 +943,10 @@
         "unload": {
           "title": "Descarregar modelo",
           "description": "Libera a memória usada pelo modelo de correção depois desse tempo sem uso."
+        },
+        "preload": {
+          "label": "Pré-carregar o modelo quando eu começar a digitar",
+          "description": "Quando você digita algumas palavras em qualquer programa, o modelo de correção começa a carregar em segundo plano para já estar pronto quando você apertar o atalho. Respeita jogos e apps em tela cheia, ditado, memória livre da placa de vídeo e o tempo para descarregar."
         }
       },
       "cloud": {

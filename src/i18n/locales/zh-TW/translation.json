@@ -943,6 +943,10 @@
         "unload": {
           "title": "Unload model",
           "description": "Frees the memory used by the correction model after it hasn't been used for this long."
+        },
+        "preload": {
+          "label": "Preload the model when I start typing",
+          "description": "When you type a few words in any program, the correction model starts loading in the background so it is ready when you press the shortcut. It respects games and full screen apps, dictation, free graphics card memory and the unload time."
         }
       },
       "cloud": {

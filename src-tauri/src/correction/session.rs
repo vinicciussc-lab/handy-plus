@@ -26,6 +26,7 @@ use super::text::{
     build_messages, clean_output, detect_lang, generation_progress, goal_in, load_progress,
     translate_goal, Lang,
 };
+use super::typing_hint::{preload_wanted, session_needs_room_check, should_preload, PreloadCheck};
 use super::{gpu_guard, text::MAX_CORRECTION_CHARS};
 use crate::actions::ShortcutAction;
 use crate::managers::audio::AudioRecordingManager;
@@ -897,6 +898,14 @@ pub struct CorrectionSessionState {
     /// Bindings just unregistered, and when: a tone key re-binds the panel
     /// while the key is still down, so it must not then count as typing.
     recently_unbound: Mutex<Vec<(String, Instant)>>,
+    /// The typing preload loading right now (never more than one).
+    typing_preload: Mutex<Option<TypingPreload>>,
+}
+
+/// A load started by typing, so a session opening meanwhile joins it.
+struct TypingPreload {
+    model: PathBuf,
+    started: Instant,
 }
 
 /// Creates the local engine and session state and starts the GPU watcher.
@@ -1070,6 +1079,111 @@ pub fn dictation_busy(app: &AppHandle) -> bool {
 pub fn session_active(app: &AppHandle) -> bool {
     app.try_state::<CorrectionSessionState>()
         .is_some_and(|s| s.active.load(Ordering::SeqCst))
+}
+
+/// Typing in a window reached the preload count: starts loading the local
+/// model (with its warm-up) in the background when [`should_preload`] allows.
+/// Returns whether it started. A session opening meanwhile joins this load
+/// (see [`Session::prepare`]); once loaded, the GPU watcher and the unload
+/// timeout apply as to any idle model.
+pub fn try_typing_preload(app: &AppHandle, own_window: bool) -> bool {
+    let (Some(state), Some(engine)) = (
+        app.try_state::<CorrectionSessionState>(),
+        app.try_state::<Arc<LocalEngine>>(),
+    ) else {
+        return false;
+    };
+    let engine = engine.inner().clone();
+    let s = get_correction_settings(app);
+    let key = s
+        .local_model_path
+        .clone()
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_default();
+    let model = PathBuf::from(&key);
+    let size = (!key.is_empty())
+        .then(|| std::fs::metadata(&model).ok())
+        .flatten()
+        .filter(|m| m.is_file())
+        .map(|m| m.len());
+    let mut check = PreloadCheck {
+        enabled: s.preload_on_typing,
+        local_provider: s.provider == CorrectionProvider::Local,
+        model_exists: size.is_some(),
+        engine_ready: size.is_some() && engine.serves(&model, true),
+        in_flight: lock(&state.typing_preload).is_some(),
+        unload_immediately: s.unload_timeout.to_seconds() == Some(0),
+        fullscreen: false,
+        dictation_busy: dictation_busy(app),
+        session_active: state.active.load(Ordering::SeqCst),
+        own_window,
+        free_vram: None,
+        model_bytes: size.unwrap_or(0),
+    };
+    if !preload_wanted(&check) {
+        return false;
+    }
+    // The system queries only once everything cheap allows it.
+    check.fullscreen = gpu_guard::fullscreen_app_active();
+    check.free_vram = gpu_guard::free_vram_bytes();
+    if !should_preload(&check) {
+        if preload_wanted(&check) {
+            info!("Typing preload skipped: not enough free GPU memory");
+        }
+        return false;
+    }
+    let started = Instant::now();
+    {
+        let mut slot = lock(&state.typing_preload);
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(TypingPreload {
+            model: model.clone(),
+            started,
+        });
+    }
+    info!("Typing preload started");
+    let expected_ms = s.last_load_ms.get(&key).copied();
+    let label = model
+        .file_stem()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let loaded = local_load(
+            app.clone(),
+            engine.clone(),
+            model,
+            true,
+            key,
+            expected_ms,
+            label,
+        )
+        .await;
+        // The idle clock starts once the warm-up is done.
+        engine.touch();
+        if let Some(state) = app.try_state::<CorrectionSessionState>() {
+            *lock(&state.typing_preload) = None;
+        }
+        match loaded {
+            Ok(_) => info!(
+                "Typing preload finished in {} ms",
+                started.elapsed().as_millis()
+            ),
+            Err(code) => info!("Typing preload failed ({code:?})"),
+        }
+    });
+    true
+}
+
+/// When the typing preload is loading `model`, when it started.
+fn typing_preload_of(app: &AppHandle, model: &std::path::Path) -> Option<Instant> {
+    let state = app.try_state::<CorrectionSessionState>()?;
+    let slot = lock(&state.typing_preload);
+    slot.as_ref()
+        .filter(|p| p.model == model)
+        .map(|p| p.started)
 }
 
 /// The typing hint was clicked: the same path as the shortcut. The hint pill
@@ -1601,7 +1715,12 @@ impl Session {
         let expected_ms = s.last_load_ms.get(&path).copied();
         let engine = self.engine();
         let served = engine.serves(&model, true);
-        if !served && !gpu_guard::has_room(gpu_guard::free_vram_bytes(), size) {
+        // A typing preload of this model is already loading: join it (the
+        // engine's load lock makes this session's load wait and reuse it).
+        let preloading = typing_preload_of(&self.app, &model);
+        if session_needs_room_check(served, preloading.is_some())
+            && !gpu_guard::has_room(gpu_guard::free_vram_bytes(), size)
+        {
             return Ok(Preload::NoRoom {
                 model,
                 key: path,
@@ -1624,7 +1743,8 @@ impl Session {
         );
         Ok(Preload::Running {
             work,
-            started: Instant::now(),
+            // The loading bar continues from where the typing preload is.
+            started: preloading.unwrap_or_else(Instant::now),
             cold,
             expected_ms,
         })

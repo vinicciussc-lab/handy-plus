@@ -75,7 +75,7 @@ fn zero_defaults_version() -> u32 {
     0
 }
 
-const DESENVOLVER_GOAL: &str = "Desenvolva o texto: explique melhor cada ideia, acrescente detalhes, exemplos ou justificativas que deixem o raciocínio completo, e organize em parágrafos se ficar longo. Mantenha o jeito de falar do usuário e a mesma opinião. Não invente fatos específicos, como números, nomes ou datas, que não estavam no texto.";
+const DESENVOLVER_GOAL: &str = "Desenvolva o texto de verdade: para cada ideia principal, escreva pelo menos uma frase a mais explicando o porquê ou dando um exemplo que o próprio texto já sugere, e ligue as ideias com conectivos simples. O resultado deve ficar com mais ou menos o dobro do tamanho do texto corrigido. Organize em parágrafos se ficar longo. Mantenha o jeito de falar do usuário e a mesma opinião. Não invente fatos específicos, como números, nomes ou datas, que não estavam no texto.";
 
 pub fn default_tones() -> Vec<CorrectionTone> {
     let tone = |id: &str, name: &str, goal: &str| CorrectionTone {
@@ -152,7 +152,7 @@ pub fn migrate_defaults(s: &mut CorrectionSettings) -> bool {
             changed = true;
         }
     }
-    if s.defaults_version < 2 {
+    if s.defaults_version < CURRENT_DEFAULTS_VERSION {
         if !s.tones.iter().any(|t| t.id == "desenvolver") && s.tones.len() < MAX_TONES {
             if let Some(tone) = new_tones.into_iter().find(|t| t.id == "desenvolver") {
                 s.tones.push(tone);

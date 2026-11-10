@@ -532,6 +532,7 @@ mod tests {
 
 "
         );
+        let mut meu_estilo_len: Option<usize> = None;
         for tone in default_tones() {
             let (system, user) = build_messages(DEFAULT_STYLE_RULES, &tone.goal, TONES_SAMPLE);
             let raw = match stream_chat(&target, &system, &user, |_| {}).await {
@@ -550,12 +551,22 @@ mod tests {
                 tone.name
             ));
             assert!(!out.contains('—') && !out.contains('–'));
+            if tone.id == "meu_estilo" {
+                meu_estilo_len = Some(out.chars().count());
+            }
             if tone.id == "desenvolver" {
+                let base = meu_estilo_len.expect("Meu estilo runs first");
+                report.push_str(&format!(
+                    "lengths: original {}, Meu estilo {base}, Desenvolver {}
+
+",
+                    TONES_SAMPLE.chars().count(),
+                    out.chars().count()
+                ));
                 assert!(
-                    out.chars().count() >= TONES_SAMPLE.chars().count() * 130 / 100,
-                    "Desenvolver did not expand enough: {} vs {}",
-                    out.chars().count(),
-                    TONES_SAMPLE.chars().count()
+                    out.chars().count() >= base * 150 / 100,
+                    "Desenvolver did not expand enough: {} vs Meu estilo {base}",
+                    out.chars().count()
                 );
             }
             if tone.id == "mais_curto" {

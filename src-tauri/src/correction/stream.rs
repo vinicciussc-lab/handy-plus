@@ -498,4 +498,58 @@ mod tests {
         engine.unload();
         assert!(!has_reasoning, "model emitted reasoning deltas");
     }
+
+    const TONES_SAMPLE: &str = "eu acho q o jogo vale a pena msm com os bugs. ontem eu joguei umas 5 horas e nao enjoei. so q o preço ta mt caro pra o q entrega entao eu esperaria uma promoção. a historia é mt boa e os grafico sao lindos. no fim das contas eu recomendo mas so na promoçao";
+
+    /// Manual: HANDY_PLUS_TEST_GGUF=caminho\modelo.gguf HANDY_PLUS_TEST_REPORT=saida.txt cargo test correction::stream::tests::real_local_engine_tones -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn real_local_engine_tones() {
+        use crate::correction::local_engine::LocalEngine;
+        use crate::correction::settings::{default_tones, DEFAULT_STYLE_RULES};
+        use crate::correction::text::{build_messages, clean_output};
+        use std::path::PathBuf;
+
+        let model =
+            PathBuf::from(std::env::var("HANDY_PLUS_TEST_GGUF").expect("set HANDY_PLUS_TEST_GGUF"));
+        let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/llama-server/llama-server.exe");
+        let engine = LocalEngine::new(bin);
+        let (url, _) = engine
+            .ensure_loaded(&model, true, None, |_| {})
+            .await
+            .expect("load model");
+        let target = ChatTarget {
+            base_url: url,
+            api_key: String::new(),
+            model: "local".into(),
+            format: PostProcessApiFormat::OpenAi,
+            local: true,
+        };
+        let mut report = format!("ORIGINAL:
+{TONES_SAMPLE}
+
+");
+        for tone in default_tones() {
+            let (system, user) = build_messages(DEFAULT_STYLE_RULES, &tone.goal, TONES_SAMPLE);
+            let raw = match stream_chat(&target, &system, &user, |_| {}).await {
+                Ok(r) => r,
+                Err(e) => {
+                    engine.unload();
+                    panic!("stream_chat failed: {e}");
+                }
+            };
+            let out = clean_output(TONES_SAMPLE, &raw);
+            report.push_str(&format!("[{}]
+{out}
+
+", tone.name));
+            assert!(!out.contains('—') && !out.contains('–'));
+        }
+        print!("{report}");
+        if let Ok(path) = std::env::var("HANDY_PLUS_TEST_REPORT") {
+            std::fs::write(path, &report).unwrap();
+        }
+        engine.unload();
+    }
 }

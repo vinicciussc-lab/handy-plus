@@ -1,6 +1,11 @@
 //! Low-level mouse and keyboard hooks (Windows). They only observe: every
 //! event goes on to its program untouched. The correction panel uses them to
-//! close on a click outside it or when the user starts typing again.
+//! close on a click outside it or when the user starts typing again, and the
+//! typing hint counts typing keys.
+//!
+//! The keyboard hook is always on. The mouse hook is installed only while a
+//! correction panel is open ([`set_mouse_hook`]): a global mouse hook adds
+//! latency to every mouse event, games included.
 
 /// What the hooks report. Injected (synthesized) input is never reported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,11 +56,17 @@ pub fn binding_vk(key: &str) -> Option<u32> {
     }
 }
 
+/// What the hook thread does with the mouse hook: `Some(true)` installs it,
+/// `Some(false)` removes it, `None` leaves it as it is.
+pub fn mouse_hook_step(wanted: bool, installed: bool) -> Option<bool> {
+    (wanted != installed).then_some(wanted)
+}
+
 #[cfg(windows)]
 mod imp {
-    use super::{is_typing_key, HookEvent};
+    use super::{is_typing_key, mouse_hook_step, HookEvent};
     use log::{error, info, warn};
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::mpsc::{channel, Sender};
     use std::sync::{Mutex, OnceLock, RwLock};
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -64,10 +75,11 @@ mod imp {
         GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RMENU, VK_RWIN,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
-        TranslateMessage, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED,
-        MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN,
-        WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_XBUTTONDOWN,
+        CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
+        SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
+        LLKHF_INJECTED, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL,
+        WH_MOUSE_LL, WM_APP, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN,
+        WM_SYSKEYDOWN, WM_XBUTTONDOWN,
     };
 
     type Callback = Box<dyn Fn(HookEvent) + Send + Sync>;
@@ -78,6 +90,10 @@ mod imp {
     /// Thread running the hooks' message loop (0 = not running).
     static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
     static STARTED: Mutex<bool> = Mutex::new(false);
+    /// Whether the mouse hook should be installed now.
+    static MOUSE_WANTED: AtomicBool = AtomicBool::new(false);
+    /// Thread message: install or remove the mouse hook to match `MOUSE_WANTED`.
+    const WM_SYNC_MOUSE: u32 = WM_APP + 1;
 
     fn down(vk: u16) -> bool {
         // High bit set = key held now.
@@ -164,26 +180,27 @@ mod imp {
         let hooks = std::thread::Builder::new()
             .name("input-hooks".into())
             .spawn(|| unsafe {
+                // Create this thread's message queue before publishing its id,
+                // so no posted message is lost.
+                let mut msg = MSG::default();
+                let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
                 HOOK_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
                 let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0);
-                let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0);
-                match (&kb, &mouse) {
-                    (Ok(_), Ok(_)) => info!("Input hooks installed (keyboard and mouse)"),
-                    _ => {
-                        if let Err(e) = &kb {
-                            error!("Could not install the keyboard hook: {e}");
-                        }
-                        if let Err(e) = &mouse {
-                            error!("Could not install the mouse hook: {e}");
-                        }
-                    }
+                match &kb {
+                    Ok(_) => info!("Keyboard hook installed"),
+                    Err(e) => error!("Could not install the keyboard hook: {e}"),
                 }
-                let mut msg = MSG::default();
+                let mut mouse: Option<HHOOK> = None;
+                sync_mouse_hook(&mut mouse);
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    if msg.hwnd.0.is_null() && msg.message == WM_SYNC_MOUSE {
+                        sync_mouse_hook(&mut mouse);
+                        continue;
+                    }
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
-                for h in [kb, mouse].into_iter().flatten() {
+                for h in [kb.ok(), mouse].into_iter().flatten() {
                     if let Err(e) = UnhookWindowsHookEx(h) {
                         warn!("Could not remove an input hook: {e}");
                     }
@@ -193,6 +210,44 @@ mod imp {
             });
         if let Err(e) = hooks {
             error!("Could not start the input hook thread: {e}");
+        }
+    }
+
+    /// Installs or removes the mouse hook to match `MOUSE_WANTED`. Runs on the
+    /// hook thread, which pumps the hooks' messages.
+    unsafe fn sync_mouse_hook(mouse: &mut Option<HHOOK>) {
+        match mouse_hook_step(MOUSE_WANTED.load(Ordering::SeqCst), mouse.is_some()) {
+            Some(true) => match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) {
+                Ok(h) => {
+                    *mouse = Some(h);
+                    info!("Mouse hook installed (correction panel open)");
+                }
+                Err(e) => error!("Could not install the mouse hook: {e}"),
+            },
+            Some(false) => {
+                if let Some(h) = mouse.take() {
+                    if let Err(e) = UnhookWindowsHookEx(h) {
+                        warn!("Could not remove the mouse hook: {e}");
+                    }
+                    info!("Mouse hook removed");
+                }
+            }
+            None => {}
+        }
+    }
+
+    pub fn set_mouse_hook(on: bool) {
+        if MOUSE_WANTED.swap(on, Ordering::SeqCst) == on {
+            return;
+        }
+        // Before the hook thread runs, it reads MOUSE_WANTED when it starts.
+        let id = HOOK_THREAD.load(Ordering::SeqCst);
+        if id != 0 {
+            unsafe {
+                if let Err(e) = PostThreadMessageW(id, WM_SYNC_MOUSE, WPARAM(0), LPARAM(0)) {
+                    warn!("Could not ask the hook thread to update the mouse hook: {e}");
+                }
+            }
         }
     }
 
@@ -206,13 +261,24 @@ mod imp {
     }
 }
 
-/// Installs the hooks once, on their own thread with a message loop, and adds
+/// Installs the keyboard hook once, on its own thread with a message loop
+/// (the mouse hook follows [`set_mouse_hook`]), and adds
 /// `on_event` to the callbacks that get every event. Callbacks run on a
 /// dispatcher thread, never inside the hook. Call again to add another one.
 #[cfg(windows)]
 pub fn start_hooks(on_event: impl Fn(HookEvent) + Send + Sync + 'static) {
     imp::start_hooks(on_event);
 }
+
+/// Installs (`true`) or removes (`false`) the mouse hook. The hook thread does
+/// the work, so this never blocks. Cheap to call when nothing changes.
+#[cfg(windows)]
+pub fn set_mouse_hook(on: bool) {
+    imp::set_mouse_hook(on);
+}
+
+#[cfg(not(windows))]
+pub fn set_mouse_hook(_on: bool) {}
 
 /// Removes the hooks (app exit).
 #[cfg(windows)]
@@ -273,5 +339,13 @@ mod tests {
         assert_eq!(binding_vk("9"), Some(0x39));
         assert_eq!(binding_vk("escape"), None);
         assert_eq!(binding_vk("ctrl+c"), None);
+    }
+
+    #[test]
+    fn mouse_hook_follows_the_wish() {
+        assert_eq!(mouse_hook_step(true, false), Some(true));
+        assert_eq!(mouse_hook_step(false, true), Some(false));
+        assert_eq!(mouse_hook_step(true, true), None);
+        assert_eq!(mouse_hook_step(false, false), None);
     }
 }

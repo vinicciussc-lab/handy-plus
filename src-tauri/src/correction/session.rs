@@ -302,6 +302,17 @@ pub fn shortcut_route(dictation_busy: bool, session_active: bool) -> ShortcutRou
     }
 }
 
+/// The mouse hook is needed only while the panel is open (a click outside it
+/// closes it). Off otherwise: a global mouse hook adds latency to every mouse
+/// event, games included.
+pub fn wants_mouse_hook(phase: &CorrectionPhase) -> bool {
+    use CorrectionPhase as P;
+    matches!(
+        phase,
+        P::Loading | P::Generating | P::Preview | P::NeedsFallback
+    )
+}
+
 /// A hook event closes the open panel: a click outside `panel` (its physical
 /// screen rect, if known), or a typing key the panel is not bound to
 /// (`registered` = temporary binding ids, so a tone digit stays a tone key).
@@ -539,7 +550,8 @@ fn engine_binary(app: &AppHandle) -> PathBuf {
 const UNBOUND_GRACE: Duration = Duration::from_millis(1000);
 
 /// Closes the open panel on a click outside it or when the user types again
-/// (the key still reaches the program). Installs the input hooks.
+/// (the key still reaches the program). Installs the keyboard hook; the
+/// mouse hook is installed only while a panel is open (see [`wants_mouse_hook`]).
 pub fn watch_input_hooks(app: &AppHandle) {
     let app = app.clone();
     input_hooks::start_hooks(move |ev| {
@@ -701,6 +713,7 @@ pub fn begin(app: &AppHandle) {
 async fn finish(app: &AppHandle) {
     let state = app.state::<CorrectionSessionState>();
     *lock(&state.inputs) = None;
+    input_hooks::set_mouse_hook(false);
     set_bindings(app, Vec::new()).await;
     overlay::hide_recording_overlay(app);
     emit(app, &CorrectionUpdateEvent::hidden());
@@ -834,6 +847,7 @@ impl Session {
     }
 
     async fn enter(&mut self, phase: CorrectionPhase, choices: usize) {
+        input_hooks::set_mouse_hook(wants_mouse_hook(&phase));
         self.play_sound_for(&phase);
         self.panel.phase = phase.clone();
         self.show(phase.clone());
@@ -856,6 +870,7 @@ impl Session {
     }
 
     async fn hold(&mut self, phase: CorrectionPhase, how_long: Duration) {
+        input_hooks::set_mouse_hook(wants_mouse_hook(&phase));
         self.panel.phase = phase.clone();
         self.show(phase);
         tokio::time::sleep(how_long).await;
@@ -1834,5 +1849,25 @@ mod tests {
             rect,
             &loading
         ));
+    }
+
+    #[test]
+    fn mouse_hook_only_while_the_panel_is_open() {
+        for p in [
+            CorrectionPhase::Loading,
+            CorrectionPhase::Generating,
+            CorrectionPhase::Preview,
+            CorrectionPhase::NeedsFallback,
+        ] {
+            assert!(wants_mouse_hook(&p), "{p:?}");
+        }
+        for p in [
+            CorrectionPhase::Applied,
+            CorrectionPhase::Copied,
+            CorrectionPhase::Error,
+            CorrectionPhase::Hidden,
+        ] {
+            assert!(!wants_mouse_hook(&p), "{p:?}");
+        }
     }
 }

@@ -189,20 +189,15 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.cor-added {
-  color: var(--cor-ok);
-  background: color-mix(in srgb, var(--cor-ok) 18%, transparent);
-  border-radius: 2px;
-}
-.cor-removed {
-  color: var(--color-error);
-  text-decoration: line-through;
-  background: color-mix(in srgb, var(--color-error) 12%, transparent);
-  border-radius: 2px;
-}
 .cor-tones {
   border-inline-start: 1px solid var(--s-hair);
   padding-inline-start: 8px;
+}
+.cor-again {
+  margin-top: 8px;
+  padding: 0 8px;
+  color: var(--s-faint);
+  font-size: 11px;
 }
 .cor-group + .cor-group {
   margin-top: 8px;

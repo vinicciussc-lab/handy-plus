@@ -1090,7 +1090,6 @@
       "view": "view",
       "scroll": "scroll",
       "viewCorrected": "Corrected",
-      "viewChanges": "Changes",
       "viewOriginal": "Original",
       "cancel": "cancel",
       "copy": "copy",
@@ -1115,7 +1114,8 @@
       },
       "styleGroup": "Style",
       "adjustGroup": "Adjustments",
-      "chooseStyle": "Choose a style (Enter = {{name}})"
+      "chooseStyle": "Choose a style (Enter = {{name}})",
+      "againHint": "Click the marked option again for another version"
     },
     "typingHint": {
       "text": "to improve the text"

@@ -10,7 +10,6 @@ import type {
 } from "@/bindings";
 import i18n from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
-import { diffWords } from "./diff";
 import "./CorrectionPanel.css";
 
 interface CorrectionPanelProps {
@@ -37,10 +36,9 @@ const FALLBACK_KEYS: Record<FallbackOption, string> = {
 
 const VIEW_KEYS: Record<CorrectionView, string> = {
   corrected: "overlay.correction.viewCorrected",
-  changes: "overlay.correction.viewChanges",
   original: "overlay.correction.viewOriginal",
 };
-const VIEWS: CorrectionView[] = ["corrected", "changes", "original"];
+const VIEWS: CorrectionView[] = ["corrected", "original"];
 
 // Three lines of the 15px / 1.5 text per arrow key press.
 const SCROLL_STEP = 3 * 15 * 1.5;
@@ -183,12 +181,12 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
   // One numbered list: the styles, then the adjustments.
   const options = [...styles, ...adjusts];
   const current = update.current_style;
-  const applied = update.applied_adjusts;
+  const adjust = update.current_adjust;
   const isOn = (i: number) =>
-    i < styles.length ? i === current : applied.includes(i - styles.length);
+    i < styles.length ? i === current : i - styles.length === adjust;
   const running = [
     current != null ? styles[current] : null,
-    ...applied.map((a) => adjusts[a]),
+    adjust != null ? adjusts[adjust] : null,
   ]
     .filter(Boolean)
     .join(" + ");
@@ -222,6 +220,9 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
     <div className="cor-tones cor-scroll" onWheel={wheelFallback}>
       {group(t("overlay.correction.styleGroup"), styles, 0)}
       {group(t("overlay.correction.adjustGroup"), adjusts, styles.length)}
+      {phase === "preview" && (
+        <div className="cor-again">{t("overlay.correction.againHint")}</div>
+      )}
     </div>
   );
   const pickHint = options.length > 1 && (
@@ -364,16 +365,6 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
             >
               {view === "corrected" && update.text}
               {view === "original" && update.original}
-              {view === "changes" &&
-                diffWords(update.original, update.text).map((p, i) =>
-                  p.kind === "same" ? (
-                    <React.Fragment key={i}>{p.text}</React.Fragment>
-                  ) : (
-                    <span key={i} className={`cor-${p.kind}`}>
-                      {p.text}
-                    </span>
-                  ),
-                )}
             </div>
             {optionList}
           </div>

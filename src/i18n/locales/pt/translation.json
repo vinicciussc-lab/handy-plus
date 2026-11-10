@@ -1090,7 +1090,6 @@
       "view": "visão",
       "scroll": "rolar",
       "viewCorrected": "Corrigido",
-      "viewChanges": "Mudanças",
       "viewOriginal": "Original",
       "cancel": "cancelar",
       "copy": "copiar",
@@ -1115,7 +1114,8 @@
       },
       "styleGroup": "Estilo",
       "adjustGroup": "Ajustes",
-      "chooseStyle": "Escolha um estilo (Enter = {{name}})"
+      "chooseStyle": "Escolha um estilo (Enter = {{name}})",
+      "againHint": "Clique de novo na opção marcada para outra versão"
     },
     "typingHint": {
       "text": "para melhorar o texto"

@@ -1287,9 +1287,9 @@ styles: string[]; adjusts: string[];
  */
 current_style: number | null; 
 /**
- * Indexes in `adjusts` applied on top of it, in order.
+ * Index in `adjusts` of the one adjustment applied on top of it.
  */
-applied_adjusts: number[]; 
+current_adjust: number | null; 
 /**
  * The local model is loading in the background while the user chooses.
  */
@@ -1303,17 +1303,13 @@ scroll_nonce: number;
  */
 scroll_dir: number }
 /**
- * Which text the preview shows; Tab cycles through them.
+ * Which text the preview shows; Tab toggles between them.
  */
 export type CorrectionView = 
 /**
- * The corrected text, clean.
+ * The corrected text.
  */
 "corrected" | 
-/**
- * The corrected text with the changes marked.
- */
-"changes" | 
 /**
  * The text as it was selected.
  */

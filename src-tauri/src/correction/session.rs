@@ -7,8 +7,10 @@
 //! and the options (styles, then adjustments) while the model loads, streams
 //! each pick into the overlay panel via [`CorrectionUpdateEvent`] and waits
 //! for Enter, a digit or Esc, which arrive through temporary global shortcuts.
-//! A style processes the original; an adjustment works on the current result,
-//! so adjustments chain.
+//! A style processes the original; an adjustment works on the current
+//! style's result, one adjustment at a time. Every result stays in memory
+//! while the panel is open, so going back to it shows it at once; picking the
+//! option already shown asks for a new variation (see [`plan_choice`]).
 
 use super::input_hooks::{self, binding_vk, click_outside, HookEvent};
 use super::local_engine::{EngineError, LocalEngine};
@@ -127,15 +129,13 @@ pub enum FallbackOption {
     Cpu,
 }
 
-/// Which text the preview shows; Tab cycles through them.
+/// Which text the preview shows; Tab toggles between them.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CorrectionView {
-    /// The corrected text, clean.
+    /// The corrected text.
     #[default]
     Corrected,
-    /// The corrected text with the changes marked.
-    Changes,
     /// The text as it was selected.
     Original,
 }
@@ -143,8 +143,7 @@ pub enum CorrectionView {
 impl CorrectionView {
     pub fn next(self) -> Self {
         match self {
-            Self::Corrected => Self::Changes,
-            Self::Changes => Self::Original,
+            Self::Corrected => Self::Original,
             Self::Original => Self::Corrected,
         }
     }
@@ -164,8 +163,8 @@ pub struct CorrectionUpdateEvent {
     pub adjusts: Vec<String>,
     /// Index in `styles` of the style the current text came from.
     pub current_style: Option<u32>,
-    /// Indexes in `adjusts` applied on top of it, in order.
-    pub applied_adjusts: Vec<u32>,
+    /// Index in `adjusts` of the one adjustment applied on top of it.
+    pub current_adjust: Option<u32>,
     /// The local model is loading in the background while the user chooses.
     pub preloading: bool,
     pub model_label: String,
@@ -190,7 +189,7 @@ impl CorrectionUpdateEvent {
             styles: Vec::new(),
             adjusts: Vec::new(),
             current_style: None,
-            applied_adjusts: Vec::new(),
+            current_adjust: None,
             preloading: false,
             model_label: String::new(),
             elapsed_ms: None,
@@ -322,30 +321,152 @@ pub fn decide(
     }
 }
 
-/// The text a pick works on: a style always starts from the original; an
-/// adjustment works on the current result, or on the original before any.
-pub fn run_source<'a>(
-    cmd: &SessionCommand,
-    original: &'a str,
-    current: Option<&'a str>,
-) -> &'a str {
+/// The language of a result. Only the original's for now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Lang {
+    #[default]
+    Original,
+}
+
+/// One combination the user can look at: a style, an adjustment on top of
+/// it, in a language. Each generated text is kept under its key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResultKey {
+    pub style: Option<usize>,
+    pub adjust: Option<usize>,
+    pub lang: Lang,
+}
+
+/// A style or an adjustment the user picked (index in its own list).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    Style(usize),
+    Adjust(usize),
+}
+
+pub fn pick_of(cmd: &SessionCommand) -> Option<Pick> {
     match cmd {
-        SessionCommand::RunAdjust(_) => current.unwrap_or(original),
-        _ => original,
+        SessionCommand::RunStyle(i) => Some(Pick::Style(*i)),
+        SessionCommand::RunAdjust(i) => Some(Pick::Adjust(*i)),
+        _ => None,
     }
 }
 
-/// Records a pick in the panel: a style replaces the chain, an adjustment
-/// joins it.
-fn mark_choice(panel: &mut CorrectionUpdateEvent, cmd: &SessionCommand) {
-    match cmd {
-        SessionCommand::RunStyle(i) => {
-            panel.current_style = Some(*i as u32);
-            panel.applied_adjusts.clear();
+/// The text a run works on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Base {
+    Original,
+    /// The text shown under this key (the current style's result).
+    Result(ResultKey),
+}
+
+/// What a pick does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Plan {
+    /// Already generated: show it, no request.
+    Show(ResultKey),
+    /// Not generated yet.
+    Generate { key: ResultKey, from: Base },
+    /// The option already shown, picked again: generate it once more and show
+    /// the new one.
+    NewVariation { key: ResultKey, from: Base },
+}
+
+impl Plan {
+    pub fn key(&self) -> ResultKey {
+        match self {
+            Self::Show(key) | Self::Generate { key, .. } | Self::NewVariation { key, .. } => *key,
         }
-        SessionCommand::RunAdjust(i) => panel.applied_adjusts.push(*i as u32),
-        _ => {}
     }
+}
+
+/// What the session shows and what it already generated. Lives only while
+/// the panel is open.
+#[derive(Debug, Default)]
+pub struct Choices {
+    pub current_style: Option<usize>,
+    pub current_adjust: Option<usize>,
+    pub lang: Lang,
+    /// Every text generated per key, oldest first; the last one is shown.
+    results: HashMap<ResultKey, Vec<String>>,
+}
+
+impl Choices {
+    fn key(&self, style: Option<usize>, adjust: Option<usize>) -> ResultKey {
+        ResultKey {
+            style,
+            adjust,
+            lang: self.lang,
+        }
+    }
+
+    /// The text shown for `key`: its newest variation.
+    pub fn latest(&self, key: ResultKey) -> Option<&str> {
+        self.results.get(&key)?.last().map(String::as_str)
+    }
+
+    /// Keeps a generated text as the newest variation of `key`. A new text for
+    /// a style drops the adjustments made on its previous text: they no longer
+    /// match what the style shows.
+    pub fn store(&mut self, key: ResultKey, text: String) {
+        if key.adjust.is_none() && key.style.is_some() {
+            self.results
+                .retain(|k, _| !(k.style == key.style && k.lang == key.lang && k.adjust.is_some()));
+        }
+        self.results.entry(key).or_default().push(text);
+    }
+
+    /// Makes `key` the combination on screen.
+    pub fn select(&mut self, key: ResultKey) {
+        self.current_style = key.style;
+        self.current_adjust = key.adjust;
+        self.lang = key.lang;
+    }
+
+    pub fn base_text<'a>(&'a self, from: &Base, original: &'a str) -> &'a str {
+        match from {
+            Base::Original => original,
+            Base::Result(key) => self.latest(*key).unwrap_or(original),
+        }
+    }
+}
+
+/// Decides what a pick does. A style works on the original and clears the
+/// adjustment; an adjustment works on the current style's result (or on the
+/// original before any style) and replaces the previous adjustment. A
+/// combination already generated shows at once; the option already shown,
+/// picked again, asks for a new variation.
+pub fn plan_choice(state: &Choices, pick: Pick) -> Plan {
+    let (key, from, again) = match pick {
+        Pick::Style(s) => (
+            state.key(Some(s), None),
+            Base::Original,
+            state.current_style == Some(s) && state.current_adjust.is_none(),
+        ),
+        Pick::Adjust(a) => {
+            let from = state
+                .current_style
+                .map_or(Base::Original, |s| Base::Result(state.key(Some(s), None)));
+            (
+                state.key(state.current_style, Some(a)),
+                from,
+                state.current_adjust == Some(a),
+            )
+        }
+    };
+    if again && state.latest(key).is_some() {
+        Plan::NewVariation { key, from }
+    } else if state.latest(key).is_some() {
+        Plan::Show(key)
+    } else {
+        Plan::Generate { key, from }
+    }
+}
+
+/// Shows the current combination as marked in the panel.
+fn mark_choice(panel: &mut CorrectionUpdateEvent, choices: &Choices) {
+    panel.current_style = choices.current_style.map(|i| i as u32);
+    panel.current_adjust = choices.current_adjust.map(|i| i as u32);
 }
 
 /// The shortcut is ignored while a dictation is anywhere in its pipeline
@@ -1045,16 +1166,6 @@ struct Session {
 
 type Step<T> = Result<Option<T>, CorrectionErrorCode>;
 
-fn goal_for(cmd: &SessionCommand, styles: &[CorrectionTone], adjusts: &[CorrectionTone]) -> String {
-    match cmd {
-        SessionCommand::RunStyle(i) => styles.get(*i),
-        SessionCommand::RunAdjust(i) => adjusts.get(*i),
-        _ => None,
-    }
-    .map(|t| t.goal.clone())
-    .unwrap_or_default()
-}
-
 impl Session {
     fn engine(&self) -> Arc<LocalEngine> {
         self.app.state::<Arc<LocalEngine>>().inner().clone()
@@ -1208,57 +1319,72 @@ impl Session {
 
         let settings = get_correction_settings(&self.app);
         let (styles, adjusts) = split_tones(&session_tones(&settings));
-        let choices = styles.len() + adjusts.len();
+        let choices_len = styles.len() + adjusts.len();
         self.panel.original = captured.text;
         self.panel.styles = styles.iter().map(|t| t.name.clone()).collect();
         self.panel.adjusts = adjusts.iter().map(|t| t.name.clone()).collect();
 
         let mut preload = self.prepare(&settings)?;
+        let mut choices = Choices::default();
+        let (translate_index, translate) = translate_goal(&adjusts);
+        // The goal of a combination: its adjustment's, else its style's. Only
+        // a translation whose adjustment the user deleted has neither.
+        let goal_for = |key: ResultKey| {
+            match (key.adjust, key.style) {
+                (Some(a), _) => adjusts.get(a),
+                (None, Some(s)) => styles.get(s),
+                (None, None) => None,
+            }
+            .map_or_else(|| translate.clone(), |t| t.goal.clone())
+        };
         // The first run: what the user picks, or the translation. An unknown
         // translation adjustment (deleted by the user) runs on the original
         // without being marked in the list.
-        let (mut cmd, mut goal) = match mode {
+        let mut plan = match mode {
             SessionMode::Correct => {
-                self.enter(CorrectionPhase::Choosing, choices).await;
+                self.enter(CorrectionPhase::Choosing, choices_len).await;
                 let cmd = self.wait_choice(&mut preload).await;
-                if !matches!(
-                    cmd,
-                    SessionCommand::RunStyle(_) | SessionCommand::RunAdjust(_)
-                ) {
+                let Some(pick) = pick_of(&cmd) else {
                     return Ok(());
-                }
-                let goal = goal_for(&cmd, &styles, &adjusts);
-                (cmd, goal)
+                };
+                plan_choice(&choices, pick)
             }
-            SessionMode::Translate => {
-                let (index, goal) = translate_goal(&adjusts);
-                (
-                    index.map_or(SessionCommand::Ignore, SessionCommand::RunAdjust),
-                    goal,
-                )
-            }
+            SessionMode::Translate => match translate_index {
+                Some(i) => plan_choice(&choices, Pick::Adjust(i)),
+                None => Plan::Generate {
+                    key: choices.key(None, None),
+                    from: Base::Original,
+                },
+            },
         };
         self.started = Instant::now();
         let Some(target) = self.resolve_target(preload, &settings).await? else {
             return Ok(());
         };
 
-        let mut current: Option<String> = None;
         loop {
-            let source = run_source(&cmd, &self.panel.original, current.as_deref()).to_string();
-            mark_choice(&mut self.panel, &cmd);
-            self.panel.view = CorrectionView::Corrected;
-            let Some(text) = self
-                .generate(&target, &settings.style_rules, &goal, &source)
-                .await?
-            else {
-                return Ok(());
+            let key = plan.key();
+            let text = match plan {
+                Plan::Show(key) => choices.latest(key).unwrap_or_default().to_string(),
+                Plan::Generate { key, from } | Plan::NewVariation { key, from } => {
+                    let source = choices.base_text(&from, &self.panel.original).to_string();
+                    let Some(text) = self
+                        .generate(&target, &settings.style_rules, &goal_for(key), &source)
+                        .await?
+                    else {
+                        return Ok(());
+                    };
+                    choices.store(key, text.clone());
+                    text
+                }
             };
-            current = Some(text.clone());
+            choices.select(key);
+            mark_choice(&mut self.panel, &choices);
+            self.panel.view = CorrectionView::Corrected;
             self.panel.text = text;
             self.panel.gen_progress = Some(1.0);
             self.panel.elapsed_ms = Some(self.started.elapsed().as_millis() as u64);
-            self.enter(CorrectionPhase::Preview, choices).await;
+            self.enter(CorrectionPhase::Preview, choices_len).await;
             match self.next_command(&[]).await {
                 SessionCommand::Apply => {
                     let text = self.panel.text.clone();
@@ -1268,12 +1394,13 @@ impl Session {
                     let text = self.panel.text.clone();
                     return self.copy(text).await;
                 }
-                next @ (SessionCommand::RunStyle(_) | SessionCommand::RunAdjust(_)) => {
-                    goal = goal_for(&next, &styles, &adjusts);
-                    cmd = next;
+                next => {
+                    let Some(pick) = pick_of(&next) else {
+                        return Ok(());
+                    };
+                    plan = plan_choice(&choices, pick);
                     self.started = Instant::now();
                 }
-                _ => return Ok(()),
             }
         }
     }
@@ -1716,7 +1843,7 @@ mod tests {
                 SessionInput::CopyKey,
                 SessionInput::Ui(UiAction::Copy),
                 SessionInput::Ui(UiAction::Apply),
-                SessionInput::Ui(UiAction::View(CorrectionView::Changes)),
+                SessionInput::Ui(UiAction::View(CorrectionView::Original)),
             ] {
                 assert_eq!(
                     decide(&p, i, 6, 0, &[FallbackOption::Cpu]),
@@ -1893,9 +2020,8 @@ mod tests {
     }
 
     #[test]
-    fn view_cycles_corrected_changes_original() {
-        assert_eq!(CorrectionView::Corrected.next(), CorrectionView::Changes);
-        assert_eq!(CorrectionView::Changes.next(), CorrectionView::Original);
+    fn tab_toggles_corrected_and_original() {
+        assert_eq!(CorrectionView::Corrected.next(), CorrectionView::Original);
         assert_eq!(CorrectionView::Original.next(), CorrectionView::Corrected);
         assert_eq!(CorrectionView::default(), CorrectionView::Corrected);
     }
@@ -2301,7 +2427,7 @@ mod tests {
             SessionInput::Ui(UiAction::Copy),
             SessionInput::CopyKey,
             SessionInput::Tab,
-            SessionInput::Ui(UiAction::View(CorrectionView::Changes)),
+            SessionInput::Ui(UiAction::View(CorrectionView::Original)),
         ] {
             assert_eq!(decide(&p, i, 4, 4, &[]), SessionCommand::Ignore, "{i:?}");
         }
@@ -2470,35 +2596,170 @@ mod tests {
         assert_eq!(goal, default.goal);
     }
 
+    fn key(style: Option<usize>, adjust: Option<usize>) -> ResultKey {
+        ResultKey {
+            style,
+            adjust,
+            lang: Lang::Original,
+        }
+    }
+
+    /// Runs a plan the way the session does, with `reply` as the model's answer.
+    fn run_plan(c: &mut Choices, pick: Pick, reply: &str) -> Plan {
+        let plan = plan_choice(c, pick);
+        if let Plan::Generate { key, .. } | Plan::NewVariation { key, .. } = &plan {
+            c.store(*key, reply.to_string());
+        }
+        c.select(plan.key());
+        plan
+    }
+
     #[test]
-    fn a_style_starts_from_the_original_and_an_adjustment_from_the_result() {
-        let original = "orig";
+    fn switching_adjustments_does_not_stack() {
+        let mut c = Choices::default();
+        run_plan(&mut c, Pick::Style(0), "formal");
+        run_plan(&mut c, Pick::Adjust(1), "formal short");
+        // The second adjustment works on the style's result, not on the first adjustment's.
         assert_eq!(
-            run_source(&SessionCommand::RunStyle(1), original, Some("now")),
-            "orig"
+            plan_choice(&c, Pick::Adjust(2)),
+            Plan::Generate {
+                key: key(Some(0), Some(2)),
+                from: Base::Result(key(Some(0), None)),
+            }
         );
+        run_plan(&mut c, Pick::Adjust(2), "formal emoji");
+        assert_eq!((c.current_style, c.current_adjust), (Some(0), Some(2)));
         assert_eq!(
-            run_source(&SessionCommand::RunAdjust(0), original, Some("now")),
-            "now"
-        );
-        // Picked before any style: the adjustment works on the original.
-        assert_eq!(
-            run_source(&SessionCommand::RunAdjust(0), original, None),
-            "orig"
+            c.base_text(&Base::Result(key(Some(0), None)), "orig"),
+            "formal"
         );
     }
 
     #[test]
-    fn a_style_resets_the_adjustments_and_adjustments_chain() {
+    fn returning_to_a_combination_uses_the_cache() {
+        let mut c = Choices::default();
+        run_plan(&mut c, Pick::Style(0), "formal");
+        run_plan(&mut c, Pick::Adjust(1), "formal short");
+        run_plan(&mut c, Pick::Style(2), "casual");
+        assert_eq!(
+            plan_choice(&c, Pick::Style(0)),
+            Plan::Show(key(Some(0), None))
+        );
+        run_plan(&mut c, Pick::Style(0), "unused");
+        assert_eq!(c.latest(key(Some(0), None)), Some("formal"));
+        assert_eq!(
+            plan_choice(&c, Pick::Adjust(1)),
+            Plan::Show(key(Some(0), Some(1)))
+        );
+        run_plan(&mut c, Pick::Adjust(1), "unused");
+        assert_eq!(c.latest(key(Some(0), Some(1))), Some("formal short"));
+        assert_eq!((c.current_style, c.current_adjust), (Some(0), Some(1)));
+    }
+
+    #[test]
+    fn picking_the_current_option_asks_for_a_variation() {
+        let mut c = Choices::default();
+        run_plan(&mut c, Pick::Style(0), "formal");
+        assert_eq!(
+            plan_choice(&c, Pick::Style(0)),
+            Plan::NewVariation {
+                key: key(Some(0), None),
+                from: Base::Original,
+            }
+        );
+        run_plan(&mut c, Pick::Style(0), "formal 2");
+        assert_eq!(c.latest(key(Some(0), None)), Some("formal 2"));
+        run_plan(&mut c, Pick::Adjust(1), "short");
+        assert_eq!(
+            plan_choice(&c, Pick::Adjust(1)),
+            Plan::NewVariation {
+                key: key(Some(0), Some(1)),
+                from: Base::Result(key(Some(0), None)),
+            }
+        );
+        run_plan(&mut c, Pick::Adjust(1), "short 2");
+        assert_eq!(c.latest(key(Some(0), Some(1))), Some("short 2"));
+        // With an adjustment on, the current style is not "the option shown":
+        // picking it goes back to the style's own result.
+        assert_eq!(
+            plan_choice(&c, Pick::Style(0)),
+            Plan::Show(key(Some(0), None))
+        );
+    }
+
+    #[test]
+    fn a_new_style_clears_the_adjustment() {
+        let mut c = Choices::default();
+        run_plan(&mut c, Pick::Style(0), "formal");
+        run_plan(&mut c, Pick::Adjust(1), "formal short");
+        assert_eq!(
+            plan_choice(&c, Pick::Style(1)),
+            Plan::Generate {
+                key: key(Some(1), None),
+                from: Base::Original,
+            }
+        );
+        run_plan(&mut c, Pick::Style(1), "casual");
+        assert_eq!((c.current_style, c.current_adjust), (Some(1), None));
+    }
+
+    #[test]
+    fn an_adjustment_without_a_style_uses_the_original() {
+        let mut c = Choices::default();
+        assert_eq!(
+            plan_choice(&c, Pick::Adjust(0)),
+            Plan::Generate {
+                key: key(None, Some(0)),
+                from: Base::Original,
+            }
+        );
+        run_plan(&mut c, Pick::Adjust(0), "short");
+        assert_eq!(
+            plan_choice(&c, Pick::Adjust(3)),
+            Plan::Generate {
+                key: key(None, Some(3)),
+                from: Base::Original,
+            }
+        );
+        assert_eq!(c.base_text(&Base::Original, "orig"), "orig");
+    }
+
+    #[test]
+    fn a_new_style_variation_drops_the_adjustments_made_on_the_old_one() {
+        let mut c = Choices::default();
+        run_plan(&mut c, Pick::Style(0), "formal");
+        run_plan(&mut c, Pick::Adjust(1), "formal short");
+        run_plan(&mut c, Pick::Style(0), "unused");
+        run_plan(&mut c, Pick::Style(0), "formal 2");
+        assert_eq!(c.latest(key(Some(0), Some(1))), None);
+        assert_eq!(
+            plan_choice(&c, Pick::Adjust(1)),
+            Plan::Generate {
+                key: key(Some(0), Some(1)),
+                from: Base::Result(key(Some(0), None)),
+            }
+        );
+    }
+
+    #[test]
+    fn panel_marks_the_current_style_and_the_one_adjustment() {
         let mut panel = CorrectionUpdateEvent::hidden();
-        mark_choice(&mut panel, &SessionCommand::RunStyle(1));
+        let mut c = Choices::default();
+        run_plan(&mut c, Pick::Style(1), "x");
+        run_plan(&mut c, Pick::Adjust(2), "y");
+        mark_choice(&mut panel, &c);
         assert_eq!(panel.current_style, Some(1));
-        mark_choice(&mut panel, &SessionCommand::RunAdjust(0));
-        mark_choice(&mut panel, &SessionCommand::RunAdjust(2));
-        assert_eq!(panel.applied_adjusts, [0, 2]);
-        mark_choice(&mut panel, &SessionCommand::RunStyle(3));
-        assert_eq!(panel.current_style, Some(3));
-        assert!(panel.applied_adjusts.is_empty());
+        assert_eq!(panel.current_adjust, Some(2));
+    }
+
+    #[test]
+    fn numbers_pick_styles_and_adjustments() {
+        assert_eq!(pick_of(&SessionCommand::RunStyle(2)), Some(Pick::Style(2)));
+        assert_eq!(
+            pick_of(&SessionCommand::RunAdjust(0)),
+            Some(Pick::Adjust(0))
+        );
+        assert_eq!(pick_of(&SessionCommand::Apply), None);
     }
 
     #[test]

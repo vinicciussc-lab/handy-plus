@@ -85,7 +85,7 @@ pub fn default_tones() -> Vec<CorrectionTone> {
         tone(
             "mais_curto",
             "Mais curto",
-            "Reescreva de forma mais curta e direta, cortando repetições e rodeios, sem perder nenhuma informação importante.",
+            "Reescreva bem mais curto: corte pelo menos metade do texto, junte as frases em poucas frases, tire repetições, rodeios e detalhes que não mudam o sentido, mantendo os fatos e a opinião do usuário.",
         ),
         tone(
             "melhorar_argumentos",
@@ -303,10 +303,64 @@ mod tests {
             tones,
             ..Default::default()
         };
-        migrate_old_defaults(&mut s);
+        assert!(migrate_old_defaults(&mut s));
         assert_eq!(s.style_rules, "minhas regras");
         assert_eq!(s.tones[1].goal, "meu objetivo");
         assert_eq!(s.tones[3].goal, default_tones()[3].goal);
+    }
+
+    #[test]
+    fn old_goal_with_a_different_id_is_untouched() {
+        let mut tones = old_tones_v1();
+        tones[2].id = "outro".into();
+        let goal = tones[2].goal.clone();
+        let mut s = CorrectionSettings {
+            style_rules: "minhas regras".into(),
+            tones,
+            ..Default::default()
+        };
+        migrate_old_defaults(&mut s);
+        assert_eq!(s.tones[2].goal, goal);
+    }
+
+    #[test]
+    fn second_migration_changes_nothing() {
+        let mut s = CorrectionSettings {
+            style_rules: OLD_STYLE_RULES_V1.into(),
+            tones: old_tones_v1(),
+            ..Default::default()
+        };
+        assert!(migrate_old_defaults(&mut s));
+        assert!(!migrate_old_defaults(&mut s));
+    }
+
+    #[test]
+    fn edited_rules_with_old_tones_only_changes_tones() {
+        let mut s = CorrectionSettings {
+            style_rules: "minhas regras".into(),
+            tones: old_tones_v1(),
+            ..Default::default()
+        };
+        assert!(migrate_old_defaults(&mut s));
+        assert_eq!(s.style_rules, "minhas regras");
+        assert_eq!(s.tones, default_tones());
+    }
+
+    #[test]
+    fn old_rules_with_edited_tones_only_changes_rules() {
+        let edited = vec![CorrectionTone {
+            id: "meu_estilo".into(),
+            name: "Meu estilo".into(),
+            goal: "meu objetivo".into(),
+        }];
+        let mut s = CorrectionSettings {
+            style_rules: OLD_STYLE_RULES_V1.into(),
+            tones: edited.clone(),
+            ..Default::default()
+        };
+        assert!(migrate_old_defaults(&mut s));
+        assert_eq!(s.style_rules, DEFAULT_STYLE_RULES);
+        assert_eq!(s.tones, edited);
     }
 
     #[test]

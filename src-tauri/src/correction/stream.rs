@@ -550,6 +550,14 @@ mod tests {
                 tone.name
             ));
             assert!(!out.contains('—') && !out.contains('–'));
+            if tone.id == "mais_curto" {
+                assert!(
+                    out.chars().count() < TONES_SAMPLE.chars().count() * 85 / 100,
+                    "Mais curto did not shorten enough: {} vs {}",
+                    out.chars().count(),
+                    TONES_SAMPLE.chars().count()
+                );
+            }
         }
         print!("{report}");
         if let Ok(path) = std::env::var("HANDY_PLUS_TEST_REPORT") {

@@ -68,6 +68,41 @@ pub fn button_position(rect: (i32, i32, i32, i32), size_px: i32, inset_px: i32) 
     }
 }
 
+/// Browsers focus a read-only Document for the page body itself.
+const BROWSERS: [&str; 6] = [
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "opera.exe",
+    "vivaldi.exe",
+];
+
+/// Whether a focused Document control is an editable text box.
+///
+/// `text_attr` is the document range's `IsReadOnly` attribute and
+/// `value_readonly` the ValuePattern's `IsReadOnly` (`None` = not reported).
+/// An explicit read-only report always wins; an explicit writable report is
+/// enough; otherwise a keyboard-focusable document counts as editable unless
+/// it lives in a browser, where page bodies must not get the button.
+pub fn document_editable(
+    text_attr: Option<bool>,
+    value_readonly: Option<bool>,
+    keyboard_focusable: bool,
+    process_name: &str,
+) -> bool {
+    if text_attr == Some(true) || value_readonly == Some(true) {
+        return false;
+    }
+    if text_attr == Some(false) || value_readonly == Some(false) {
+        return true;
+    }
+    keyboard_focusable
+        && !BROWSERS
+            .iter()
+            .any(|b| b.eq_ignore_ascii_case(process_name.trim()))
+}
+
 #[cfg(windows)]
 mod win {
     use super::FieldInfo;
@@ -88,7 +123,9 @@ mod win {
         UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_IsReadOnlyAttributeId,
         UIA_TextPatternId, UIA_ValuePatternId,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, GA_ROOT,
+    };
 
     /// Caps for cross-process UI Automation calls, so a hung target app
     /// cannot stall the polling thread (the defaults are 2 s / 20 s).
@@ -139,60 +176,50 @@ mod win {
                 return None;
             }
             let pid = u32::try_from(el.CurrentProcessId().ok()?).ok()?;
+            let hwnd = owner_window(&el, pid)?;
+            let process_name = process_name(pid).unwrap_or_default();
             let enabled = el.CurrentIsEnabled().is_ok_and(BOOL::as_bool);
-            let password = el.CurrentIsPassword().is_ok_and(BOOL::as_bool);
+            // Fail closed: if we can't tell, treat it as a password field.
+            let password = el.CurrentIsPassword().map_or(true, BOOL::as_bool);
 
             let mut editable = false;
             let mut has_text = false;
             if (is_edit || is_doc) && enabled {
                 let value: Option<IUIAutomationValuePattern> =
                     el.GetCurrentPatternAs(UIA_ValuePatternId).ok();
-                let range = document_range(&el);
-                let mut read_only = value
+                let value_readonly = value
                     .as_ref()
-                    .is_some_and(|v| v.CurrentIsReadOnly().is_ok_and(BOOL::as_bool));
-                // Browsers focus a read-only Document for the page itself; only
-                // treat a Document as editable when its text says so explicitly.
-                if is_doc && !read_only {
-                    read_only = !range.as_ref().is_some_and(|r| explicitly_writable(r));
-                }
-                editable = !read_only;
-                // Never read the contents of a password field.
+                    .and_then(|v| v.CurrentIsReadOnly().ok())
+                    .map(BOOL::as_bool);
+                // The text range is only needed to judge a Document or to probe
+                // for text; skip the extra cross-process call otherwise.
+                let range = if is_doc || (value_readonly != Some(true) && !password) {
+                    document_range(&el)
+                } else {
+                    None
+                };
+                editable = if is_doc {
+                    let text_attr = range.as_ref().and_then(|r| read_only_attribute(r));
+                    let focusable = el.CurrentIsKeyboardFocusable().is_ok_and(BOOL::as_bool);
+                    super::document_editable(text_attr, value_readonly, focusable, &process_name)
+                } else {
+                    value_readonly != Some(true)
+                };
+                // Never read the contents of a password field. Prefer one
+                // character of the text range over copying the whole value.
                 if editable && !password {
-                    let from_value = || {
-                        value
-                            .as_ref()
-                            .and_then(|v| v.CurrentValue().ok())
-                            .map(|b| !b.is_empty())
-                    };
-                    let from_range = || {
-                        range
-                            .as_ref()
-                            .and_then(|r| r.GetText(1).ok())
-                            .map(|b| !b.is_empty())
-                    };
-                    has_text = if is_doc {
-                        from_range().or_else(from_value)
-                    } else {
-                        from_value().or_else(from_range)
-                    }
-                    .unwrap_or(false);
+                    has_text = range
+                        .as_ref()
+                        .and_then(|r| r.GetText(1).ok())
+                        .or_else(|| value.as_ref().and_then(|v| v.CurrentValue().ok()))
+                        .is_some_and(|b| !b.is_empty());
                 }
             }
-
-            let native = el.CurrentNativeWindowHandle().unwrap_or_default();
-            let owner = if native.is_invalid() {
-                GetForegroundWindow()
-            } else {
-                native
-            };
-            let root = GetAncestor(owner, GA_ROOT);
-            let hwnd: HWND = if root.is_invalid() { owner } else { root };
 
             Some(FieldInfo {
                 hwnd: hwnd.0 as isize,
                 pid,
-                process_name: process_name(pid).unwrap_or_default(),
+                process_name,
                 rect: (r.left, r.top, r.right, r.bottom),
                 editable,
                 password,
@@ -210,19 +237,44 @@ mod win {
         }
     }
 
-    /// True only when the range reports `IsReadOnly == false` as a plain bool
-    /// (not "mixed" and not "not supported").
-    unsafe fn explicitly_writable(range: &IUIAutomationTextRange) -> bool {
+    /// Top-level window that owns the element. Uses the element's own handle
+    /// when it has one; otherwise (Chrome/Electron content) the foreground
+    /// window, accepted only when it belongs to the same process.
+    unsafe fn owner_window(el: &IUIAutomationElement, pid: u32) -> Option<HWND> {
         unsafe {
-            let Ok(mut v) = range.GetAttributeValue(UIA_IsReadOnlyAttributeId) else {
-                return false;
+            let native = el.CurrentNativeWindowHandle().unwrap_or_default();
+            let (candidate, check_pid) = if native.is_invalid() {
+                (GetForegroundWindow(), true)
+            } else {
+                (native, false)
             };
+            let root = GetAncestor(candidate, GA_ROOT);
+            let hwnd = if root.is_invalid() { candidate } else { root };
+            if hwnd.is_invalid() {
+                return None;
+            }
+            if check_pid {
+                let mut owner_pid = 0u32;
+                GetWindowThreadProcessId(hwnd, Some(&mut owner_pid));
+                if owner_pid != pid {
+                    return None;
+                }
+            }
+            Some(hwnd)
+        }
+    }
+
+    /// The range's `IsReadOnly` attribute when reported as a plain bool;
+    /// `None` for "mixed", "not supported" or errors.
+    unsafe fn read_only_attribute(range: &IUIAutomationTextRange) -> Option<bool> {
+        unsafe {
+            let mut v = range.GetAttributeValue(UIA_IsReadOnlyAttributeId).ok()?;
             let inner = &v.Anonymous.Anonymous;
-            let writable = inner.vt == VT_BOOL && !inner.Anonymous.boolVal.as_bool();
+            let value = (inner.vt == VT_BOOL).then(|| inner.Anonymous.boolVal.as_bool());
             // The raw VARIANT has no Drop; clear it so a mixed/unsupported
             // IUnknown sentinel is released.
             let _ = VariantClear(&mut v);
-            writable
+            value
         }
     }
 
@@ -329,6 +381,44 @@ mod tests {
     fn button_sits_inside_bottom_right_or_beside_small_fields() {
         assert_eq!(button_position((100, 100, 500, 200), 28, 6), (466, 166));
         assert_eq!(button_position((100, 100, 130, 120), 28, 6), (136, 92));
+    }
+
+    #[test]
+    fn document_editable_table() {
+        // (text IsReadOnly attr, ValuePattern IsReadOnly, keyboard focusable, process) -> editable
+        let cases: [(Option<bool>, Option<bool>, bool, &str, bool); 13] = [
+            // Explicit "writable" from either source.
+            (Some(false), None, false, "chrome.exe", true),
+            (None, Some(false), false, "chrome.exe", true),
+            (Some(false), Some(false), true, "WINWORD.EXE", true),
+            // Unknown signals: focusable non-browser documents (Notepad, Word) pass.
+            (None, None, true, "Notepad.exe", true),
+            (None, None, true, "WINWORD.EXE", true),
+            (None, None, false, "Notepad.exe", false),
+            // Browsers keep the strict rule, so page bodies get no button.
+            (None, None, true, "chrome.exe", false),
+            (None, None, true, "MSEdge.exe", false),
+            (None, None, true, "firefox.exe", false),
+            (None, None, true, "Brave.exe", false),
+            (None, None, true, "opera.exe", false),
+            (None, None, true, "vivaldi.exe", false),
+            // An explicit read-only report always wins.
+            (Some(true), None, true, "Notepad.exe", false),
+        ];
+        for (attr, value_ro, focusable, process, expected) in cases {
+            assert_eq!(
+                document_editable(attr, value_ro, focusable, process),
+                expected,
+                "{attr:?} {value_ro:?} {focusable} {process}"
+            );
+        }
+        assert!(!document_editable(None, Some(true), true, "Notepad.exe"));
+        assert!(!document_editable(
+            Some(false),
+            Some(true),
+            true,
+            "Notepad.exe"
+        ));
     }
 
     #[test]

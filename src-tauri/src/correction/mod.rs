@@ -1,6 +1,5 @@
 //! Handy Plus additions: first-run import from Handy and text correction.
 
-pub mod button;
 pub mod gpu_guard;
 pub mod import;
 pub mod local_engine;
@@ -10,4 +9,3 @@ pub mod session;
 pub mod settings;
 pub mod stream;
 pub mod text;
-pub mod text_focus;

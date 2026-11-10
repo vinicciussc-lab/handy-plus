@@ -980,19 +980,6 @@
         "title": "Sound",
         "label": "Sound when correcting",
         "description": "Plays a soft sound when the correction starts and when the preview is ready."
-      },
-      "floatingButton": {
-        "title": "Floating button",
-        "label": "Floating button in text boxes",
-        "description": "Shows a small round button in the corner of the text box you are typing in. Click it to correct the whole box. It only appears when the box already has text, and never in games, fullscreen apps or password fields.",
-        "excluded": {
-          "title": "Don't show the button in these apps",
-          "description": "Program file names, for example Discord.exe.",
-          "placeholder": "Discord.exe",
-          "add": "Add",
-          "remove": "Remove {{name}}",
-          "empty": "No apps on the list."
-        }
       }
     }
   },
@@ -1088,7 +1075,6 @@
       "viewChanges": "Changes",
       "viewOriginal": "Original",
       "cancel": "cancel",
-      "button": "Correct text",
       "gpuFull": "GPU memory full",
       "cloud": "Cloud",
       "cpu": "CPU",

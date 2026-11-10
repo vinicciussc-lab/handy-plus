@@ -27,12 +27,6 @@ async setCorrectionSettingsCmd(settings: CorrectionSettings) : Promise<Result<nu
 async listLocalModels(dir: string) : Promise<LocalModel[]> {
     return await TAURI_INVOKE("list_local_models", { dir });
 },
-/**
- * Hides the button and corrects the box it was sitting on.
- */
-async correctionButtonClicked() : Promise<void> {
-    await TAURI_INVOKE("correction_button_clicked");
-},
 async resetBinding(id: string) : Promise<Result<BindingResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reset_binding", { id }) };
@@ -1255,15 +1249,7 @@ defaults_version?: number;
 /**
  * Soft sounds when a correction starts and when the preview is ready.
  */
-sounds?: boolean; 
-/**
- * Round button at the bottom-right of the focused text box.
- */
-floating_button?: boolean; 
-/**
- * Executable names (e.g. `Discord.exe`) where the floating button never shows.
- */
-button_excluded_apps: string[] }
+sounds?: boolean }
 export type CorrectionTone = { id: string; name: string; goal: string }
 /**
  * Everything the correction panel shows. Sent whenever it changes.

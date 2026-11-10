@@ -7,7 +7,7 @@
 //! a digit or Esc, which arrive through temporary global shortcuts.
 
 use super::local_engine::{EngineError, LocalEngine};
-use super::selection::{self, CaptureError, CaptureMode};
+use super::selection::{self, CaptureError};
 use super::settings::{
     default_tones, get_correction_settings, write_correction_settings, CloudModel,
     CorrectionProvider, CorrectionSettings, CorrectionTone,
@@ -237,11 +237,6 @@ pub fn decide(
 /// correction runs.
 pub fn should_start(dictation_busy: bool, session_active: bool) -> bool {
     !dictation_busy && !session_active
-}
-
-/// The floating button obeys the same gates as the shortcut.
-pub fn button_click_allowed(dictation_busy: bool, session_active: bool) -> bool {
-    should_start(dictation_busy, session_active)
 }
 
 pub fn check_text(text: &str) -> Result<(), CorrectionErrorCode> {
@@ -505,60 +500,24 @@ pub fn input(app: &AppHandle, input: SessionInput) {
     }
 }
 
-/// The session's "in progress" flag, shared with the floating button watcher.
-pub fn active_flag(app: &AppHandle) -> Option<Arc<AtomicBool>> {
-    app.try_state::<CorrectionSessionState>()
-        .map(|state| state.active.clone())
-}
-
-/// What started a session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Origin {
-    /// The shortcut: the selection, or the whole box when nothing is selected.
-    Shortcut,
-    /// The floating button on the text box owned by top-level window `hwnd`:
-    /// that window is brought back first and the whole box is taken.
-    Button { hwnd: isize },
-}
-
-/// True while a dictation is anywhere in its pipeline. The tray state is set
-/// on every dictation start, finish and cancel (even with no tray icon) and
-/// stays busy until the paste is done.
-fn dictation_busy(app: &AppHandle) -> bool {
-    crate::tray::dictation_in_progress(app)
-        || app
-            .try_state::<Arc<AudioRecordingManager>>()
-            .is_some_and(|m| m.is_recording())
-}
-
 /// Starts a correction unless one is running or a dictation is recording.
 pub fn begin(app: &AppHandle) {
-    start(app, Origin::Shortcut);
-}
-
-/// Starts a correction of the whole text box from the floating button, with
-/// the same gates as the shortcut.
-pub fn begin_from_button(app: &AppHandle, hwnd: isize) {
-    start(app, Origin::Button { hwnd });
-}
-
-fn start(app: &AppHandle, origin: Origin) {
     let Some(state) = app.try_state::<CorrectionSessionState>() else {
         return;
     };
-    let busy = dictation_busy(app);
-    let active = state.active.load(Ordering::SeqCst);
-    let allowed = match origin {
-        Origin::Shortcut => should_start(busy, active),
-        Origin::Button { .. } => button_click_allowed(busy, active),
-    };
-    if !allowed
+    // The tray state is set on every dictation start, finish and cancel (even
+    // with no tray icon) and stays busy until the paste is done.
+    let dictation_busy = crate::tray::dictation_in_progress(app)
+        || app
+            .try_state::<Arc<AudioRecordingManager>>()
+            .is_some_and(|m| m.is_recording());
+    if !should_start(dictation_busy, state.active.load(Ordering::SeqCst))
         || state
             .active
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
     {
-        debug!("Correction {origin:?} ignored (dictation or another correction running)");
+        debug!("Correction shortcut ignored (dictation or another correction running)");
         return;
     }
     let (tx, rx) = unbounded_channel();
@@ -566,7 +525,7 @@ fn start(app: &AppHandle, origin: Origin) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // Run in its own task so a panic is caught here and cleanup still runs.
-        let work = tauri::async_runtime::spawn(run(app.clone(), rx, origin));
+        let work = tauri::async_runtime::spawn(run(app.clone(), rx));
         if let Err(e) = work.await {
             error!("Correction session failed: {e}");
         }
@@ -669,11 +628,10 @@ fn record_load_ms(app: &AppHandle, model: &str, ms: u64) {
     write_correction_settings(app, &s);
 }
 
-async fn run(app: AppHandle, inputs: UnboundedReceiver<SessionInput>, origin: Origin) {
+async fn run(app: AppHandle, inputs: UnboundedReceiver<SessionInput>) {
     let mut session = Session {
         panel: CorrectionUpdateEvent::hidden(),
         app,
-        origin,
         inputs,
         started: Instant::now(),
         start_played: false,
@@ -688,7 +646,6 @@ async fn run(app: AppHandle, inputs: UnboundedReceiver<SessionInput>, origin: Or
 
 struct Session {
     app: AppHandle,
-    origin: Origin,
     inputs: UnboundedReceiver<SessionInput>,
     panel: CorrectionUpdateEvent,
     /// Start of the current attempt (the shortcut, or the last tone change).
@@ -770,28 +727,11 @@ impl Session {
 
     async fn correct(&mut self) -> Result<(), CorrectionErrorCode> {
         let app = self.app.clone();
-        let origin = self.origin;
-        let captured = tauri::async_runtime::spawn_blocking(move || {
-            let mode = match origin {
-                Origin::Shortcut => CaptureMode::SelectionOrWholeField,
-                Origin::Button { hwnd } => {
-                    // The click shouldn't move focus, but make sure the box's
-                    // window gets the Ctrl+A and Ctrl+C, never another one.
-                    if !selection::refocus(hwnd) {
-                        return Ok(None);
-                    }
-                    CaptureMode::WholeField
-                }
-            };
-            selection::capture_selection(&app, mode).map(Some)
-        })
-        .await
-        .map_err(|_| CorrectionErrorCode::ClipboardFailed)?
-        .map_err(capture_error_code)?;
-        let Some(captured) = captured else {
-            info!("Floating button: the text box's window could not be brought back; nothing done");
-            return Ok(());
-        };
+        let captured =
+            tauri::async_runtime::spawn_blocking(move || selection::capture_selection(&app))
+                .await
+                .map_err(|_| CorrectionErrorCode::ClipboardFailed)?
+                .map_err(capture_error_code)?;
         check_text(&captured.text)?;
 
         let settings = get_correction_settings(&self.app);
@@ -1147,22 +1087,6 @@ mod tests {
         assert!(should_start(false, false));
         assert!(!should_start(true, false));
         assert!(!should_start(false, true));
-    }
-
-    #[test]
-    fn button_click_obeys_the_shortcut_gates() {
-        assert!(button_click_allowed(false, false));
-        assert!(!button_click_allowed(true, false));
-        assert!(!button_click_allowed(false, true));
-        assert!(!button_click_allowed(true, true));
-        for busy in [false, true] {
-            for active in [false, true] {
-                assert_eq!(
-                    button_click_allowed(busy, active),
-                    should_start(busy, active)
-                );
-            }
-        }
     }
 
     #[test]

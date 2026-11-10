@@ -687,7 +687,6 @@ pub fn run(cli_args: CliArgs) {
             correction::settings::get_correction_settings_cmd,
             correction::settings::set_correction_settings_cmd,
             correction::models::list_local_models,
-            correction::button::correction_button_clicked,
             shortcut::reset_binding,
             shortcut::change_shortcut_activation_setting,
             shortcut::change_hold_threshold_ms_setting,
@@ -1108,15 +1107,6 @@ pub fn run(cli_args: CliArgs) {
 
             initialize_core_logic(&app_handle);
             correction::session::init(&app_handle);
-            // Handy Plus: the floating correction button (Windows only: it needs
-            // UI Automation to find the focused text box).
-            #[cfg(windows)]
-            {
-                correction::button::create_button_window(&app_handle);
-                if let Some(active) = correction::session::active_flag(&app_handle) {
-                    correction::button::spawn_button_watcher(app_handle.clone(), active);
-                }
-            }
 
             // Secure Input monitor (macOS): detects stuck secure input that
             // silently blocks keyed shortcuts, warns the user, and activates
@@ -1225,12 +1215,8 @@ pub fn run(cli_args: CliArgs) {
             }
             show_main_window(app);
         }
-        // Handy Plus: hide the floating button and stop the correction
-        // model's llama-server.
-        tauri::RunEvent::Exit => {
-            correction::button::shutdown(app);
-            correction::session::shutdown(app);
-        }
+        // Handy Plus: stop the correction model's llama-server.
+        tauri::RunEvent::Exit => correction::session::shutdown(app),
         // No transcription teardown on exit: transcribe.cpp runs only in the
         // worker process, which exits by itself as soon as this process's end
         // of its stdin closes, even if it is hung. Waiting on an unload here

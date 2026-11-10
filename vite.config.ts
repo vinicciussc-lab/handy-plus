@@ -17,17 +17,12 @@ export default defineConfig(async () => ({
     },
   },
 
-  // Multiple entry points: the main app, the overlay and the floating
-  // correction button
+  // Multiple entry points: the main app and the overlay
   build: {
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
         overlay: resolve(__dirname, "src/overlay/index.html"),
-        correctionButton: resolve(
-          __dirname,
-          "src/correction-button/index.html",
-        ),
       },
     },
   },

@@ -25,20 +25,6 @@ pub struct Captured {
     pub whole_field: bool,
 }
 
-/// Which text a capture takes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CaptureMode {
-    /// The selection, or the whole box when nothing is selected (the shortcut).
-    SelectionOrWholeField,
-    /// Always the whole box, even with a partial selection (the floating button).
-    WholeField,
-}
-
-/// Whether the capture selects the whole box before the first copy.
-fn select_all_first(mode: CaptureMode) -> bool {
-    mode == CaptureMode::WholeField
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum CaptureStep {
     Done,
@@ -135,11 +121,10 @@ fn should_rerestore(after_restore: Option<u32>, now: Option<u32>) -> bool {
     matches!((after_restore, now), (Some(a), Some(n)) if a != n)
 }
 
-/// Copies the current selection (or the whole box, per `mode`) via Ctrl+C and
-/// returns it with the window it came from. Call from a worker thread: it
-/// sleeps and polls. The user's clipboard (text, or an image when there is no
-/// text) is restored on every path.
-pub fn capture_selection(app: &AppHandle, mode: CaptureMode) -> Result<Captured, CaptureError> {
+/// Copies the current selection via Ctrl+C and returns it with the window it
+/// came from. Call from a worker thread: it sleeps and polls. The user's
+/// clipboard (text, or an image when there is no text) is restored on every path.
+pub fn capture_selection(app: &AppHandle) -> Result<Captured, CaptureError> {
     let hwnd = foreground_window();
     if !wait_until_released(
         modifiers_down,
@@ -151,7 +136,7 @@ pub fn capture_selection(app: &AppHandle, mode: CaptureMode) -> Result<Captured,
     }
 
     // A dictation paste uses the clipboard the same way; never interleave.
-    let (text, whole_field) = with_paste_lock(|| copy_and_restore(app, mode))?;
+    let (text, whole_field) = with_paste_lock(|| copy_and_restore(app))?;
     if is_blank_selection(&text) {
         return Err(CaptureError::NothingSelected);
     }
@@ -166,10 +151,10 @@ pub fn capture_selection(app: &AppHandle, mode: CaptureMode) -> Result<Captured,
     })
 }
 
-/// Saves the clipboard, copies the selection (or the whole box) and restores
-/// the clipboard. Returns the text and whether it came from selecting the whole
-/// box; the text is empty when nothing was copied.
-fn copy_and_restore(app: &AppHandle, mode: CaptureMode) -> Result<(String, bool), CaptureError> {
+/// Saves the clipboard, copies the selection and restores the clipboard.
+/// Returns the text and whether it came from selecting the whole box; the text
+/// is empty when nothing was copied.
+fn copy_and_restore(app: &AppHandle) -> Result<(String, bool), CaptureError> {
     let clipboard = app.clipboard();
     let saved_text = clipboard.read_text().ok().filter(|t| !t.is_empty());
     // Same as paste_via_clipboard: decoding an image is only worth it when
@@ -194,19 +179,19 @@ fn copy_and_restore(app: &AppHandle, mode: CaptureMode) -> Result<(String, bool)
         }
     };
 
-    let mut whole_field = select_all_first(mode);
-    let copied = if whole_field {
-        select_all_and_copy(app)
-    } else {
-        copy_selection(app).and_then(|first| {
-            if after_first_copy(&first) == CaptureStep::Done {
-                return Ok(first);
-            }
-            // Nothing selected: take the whole box.
-            whole_field = true;
-            select_all_and_copy(app)
-        })
-    };
+    let mut whole_field = false;
+    let copied = copy_selection(app).and_then(|first| {
+        if after_first_copy(&first) == CaptureStep::Done {
+            return Ok(first);
+        }
+        // Nothing selected: take the whole box.
+        whole_field = true;
+        with_enigo(app, |enigo| {
+            input::send_select_all_ctrl_a(enigo, COPY_HOLD_MS)
+        })?;
+        std::thread::sleep(SELECT_ALL_SETTLE);
+        copy_selection(app)
+    });
     restore();
 
     let text = copied.map_err(CaptureError::Clipboard)?;
@@ -223,15 +208,6 @@ fn copy_and_restore(app: &AppHandle, mode: CaptureMode) -> Result<(String, bool)
         }
     }
     Ok((text, whole_field))
-}
-
-/// Selects the whole box with Ctrl+A, then copies it.
-fn select_all_and_copy(app: &AppHandle) -> Result<String, String> {
-    with_enigo(app, |enigo| {
-        input::send_select_all_ctrl_a(enigo, COPY_HOLD_MS)
-    })?;
-    std::thread::sleep(SELECT_ALL_SETTLE);
-    copy_selection(app)
 }
 
 /// Clears the clipboard, sends Ctrl+C and polls for the copied text. Returns an
@@ -316,12 +292,6 @@ mod tests {
         assert_eq!(after_first_copy(""), CaptureStep::TrySelectAll);
         assert_eq!(after_first_copy("  \n"), CaptureStep::TrySelectAll);
         assert_eq!(after_first_copy("oi"), CaptureStep::Done);
-    }
-
-    #[test]
-    fn only_the_button_selects_the_whole_box_first() {
-        assert!(select_all_first(CaptureMode::WholeField));
-        assert!(!select_all_first(CaptureMode::SelectionOrWholeField));
     }
 
     #[test]

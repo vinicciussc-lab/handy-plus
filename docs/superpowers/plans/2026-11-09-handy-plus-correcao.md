@@ -1218,3 +1218,53 @@ impl HintTracker {
 - [ ] **Step 1: Testes** do `HintTracker`: não mostra antes de 12 teclas; não mostra antes de 1,5 s parado; mostra uma vez por janela; trocar de janela zera; `blocked` impede e não marca a janela.
 - [ ] **Step 2–4:** falhar, implementar, passar (`cargo test`, lint, check:translations, build).
 - [ ] **Step 5: Commit.** `feat: show a typing hint with the correction shortcut`
+
+---
+
+## Quarta rodada (2026-11-10): Aplicar, estilos e ajustes, atalho de tradução
+
+Spec: seção 16 do design.
+
+### Task 24: Aplicar cola com Ctrl + V e registra o resultado
+
+**Files:** `src-tauri/src/clipboard.rs`, `src-tauri/src/correction/session.rs`
+- `correction_paste_method(_: PasteMethod) -> PasteMethod` passa a devolver sempre `PasteMethod::CtrlV` (a correção é texto puro). Atualizar o teste existente para a regra nova.
+- `Session::apply` registra `info!` com o resultado: "pasted", "refocus failed, left on clipboard" ou o erro (sem o texto).
+- [ ] Teste: `correction_always_pastes_with_ctrl_v` cobre todas as variantes de `PasteMethod`.
+- [ ] Commit: `fix: paste corrections with Ctrl+V so every app accepts them`
+
+### Task 25: Estilos e ajustes nas configurações (modelo de dados e migração)
+
+**Files:** `src-tauri/src/correction/settings.rs` (+ teste real ignorado em `stream.rs`)
+- `CorrectionTone` ganha `kind: ToneKind` (`#[serde(default)]`, padrão `Style`); `enum ToneKind { Style, Adjust }` (snake_case).
+- `default_tones()`: estilos `meu_estilo` "Meu estilo", `mais_formal` "Formal", `descolado` "Descolado", `poetico` "Poético"; ajustes `mais_curto` "Encurtar", `desenvolver` "Desenvolver", `traduzir` "Traduzir", `melhorar_argumentos` "Melhorar argumentos" (ids antigos mantidos para a migração reconhecer).
+- Objetivos novos:
+  - Descolado: `Reescreva com um tom descontraído e leve, como numa conversa entre amigos: pode usar gírias comuns e expressões do dia a dia, sem exagerar e sem ficar forçado. Mantenha as ideias e a opinião do usuário.`
+  - Poético: `Reescreva com um toque poético: escolha imagens e comparações bonitas, cuide do ritmo das frases e deixe o texto mais expressivo, sem perder o sentido nem inventar fatos. Nada de rimas forçadas.`
+  - Os ajustes recebem o texto já processado: os objetivos de Encurtar, Desenvolver, Traduzir e Melhorar argumentos continuam iguais aos atuais.
+- `CURRENT_DEFAULTS_VERSION = 4`; migração `< 4`: dá `kind` aos ids conhecidos (`mais_curto`, `desenvolver`, `traduzir`, `melhorar_argumentos` → Adjust; os outros → Style); renomeia "Mais formal"→"Formal" e "Mais curto"→"Encurtar" só se o nome ainda for o padrão antigo; acrescenta `descolado` e `poetico` (logo após os estilos existentes) se ausentes e se houver espaço (limite 9 por tipo).
+- Correção de bug: o limite de 9 passa a ser por tipo (`MAX_PER_KIND = 9`).
+- [ ] Testes: padrões (4 estilos, 4 ajustes, ordem); migração v3→v4 (tipos, renomeia só nomes padrão, acrescenta os dois estilos uma vez, não ressuscita apagados, idempotente); loja antiga sem `kind` carrega como Style.
+- [ ] Teste real (ignorado) com o Gemma: Descolado e Poético num texto do spec; sem travessão; Poético diferente do original de forma visível.
+- [ ] Commit: `feat: split tones into styles and adjustments`
+
+### Task 26: Sessão espera a escolha, ajustes encadeados e atalho de tradução
+
+**Files:** `src-tauri/src/correction/session.rs`, `src-tauri/src/settings.rs` (binding `translate_selection`), `src-tauri/src/actions.rs`, `src-tauri/src/lib.rs`
+- Nova fase `CorrectionPhase::Choosing` (painel aberto com o original e as opções; nada gerado). O atalho de correção abre em Choosing e dispara o carregamento do modelo local em segundo plano (sem gerar); se ainda estiver carregando quando o usuário escolher, mostra Loading normalmente.
+- Lista numerada única: `options = estilos ++ ajustes` (números 1..9 na ordem; acima de 9 só clique). `CorrectionUpdateEvent` passa a levar `styles: Vec<String>`, `adjusts: Vec<String>`, `current_style: Option<u32>`, `applied_adjusts: Vec<u32>` (no lugar de `tones`/`tone_index`).
+- `decide`: em Choosing, Digit/Ui(Tone) de um estilo → `RunStyle(i)`; de um ajuste → `RunAdjust(i)` (sobre o original); Enter → `RunStyle(0)`; Esc/Shortcut/Dismiss/Cancel → Cancel. Em Preview: estilo → `RunStyle(i)` (do original, zera ajustes); ajuste → `RunAdjust(i)` (sobre o texto atual); Enter → Apply; resto como hoje.
+- Geração de ajuste: `build_messages(rules, goal_do_ajuste, texto_atual)`.
+- Novo binding `translate_selection` (nome "Translate Selection"), padrão `ctrl+shift+section` no Windows; ação abre a sessão já rodando o ajuste `traduzir` sobre o texto capturado (se o ajuste não existir, usa o objetivo padrão de Traduzir).
+- [ ] Testes de `decide` para Choosing e Preview (estilos, ajustes, Enter, números fora do intervalo), do mapeamento número→opção com mais de 9 itens, e do binding padrão de tradução (parse pelo handy-keys).
+- [ ] Commit: `feat: let the user pick a style first and chain adjustments`
+
+### Task 27: Painel e configurações para estilos e ajustes
+
+**Files:** `src/overlay/correction/*`, `src/components/settings/correction/*`, locales
+- Painel em Choosing: o texto original no cartão, dica "Escolha um estilo (Enter = Meu estilo)", duas colunas ou dois grupos: **Estilo** (1–4) e **Ajustes** (5–8), clicáveis; barra de carregamento discreta se o modelo ainda estiver carregando.
+- Em Preview: os mesmos dois grupos, com o estilo atual destacado e os ajustes aplicados marcados com ✓ na ordem; rodapé Aplicar / Copiar / Cancelar como hoje.
+- Configurações: duas listas editáveis (Estilos, Ajustes), cada uma com adicionar/apagar/subir/descer, nome + objetivo; o campo de atalho de tradução (`ShortcutInput shortcutId="translate_selection"`).
+- i18n en + pt (sem travessão), inglês nas outras línguas.
+- [ ] `bun run lint`, `bun run check:translations`, `bun run build`; bindings regenerados.
+- [ ] Commit: `feat: style and adjustment controls in the panel and settings`

@@ -219,3 +219,16 @@ Aprovado pelo usuário depois de testar o botão flutuante.
 - **Erros previstos no painel:** clicar fora do painel fecha (igual ao Esc); voltar a digitar fecha e a digitação segue normal; apertar o atalho de novo fecha; Ctrl + C copia a correção e fecha (sem colar); Enter continua aplicando e Ctrl + Z desfaz.
 - **Mouse no painel:** botões Aplicar, Copiar e Cancelar; clicar num tom refaz nesse tom; clicar em Corrigido / Mudanças / Original troca a visão; rodinha rola o texto. Editar o texto à mão dentro do painel fica para depois (exigiria o painel tomar o foco do teclado).
 - **Painel mais largo e com respiro:** ~760 × 460, com mais margem interna.
+
+## 16. Quarta rodada (2026-11-10): Aplicar, estilos e ajustes, atalho de tradução
+
+Aprovado pelo usuário depois do teste da terceira rodada.
+
+- **Aplicar não substituía o texto** (Copiar funcionava). Causa provável: a colagem da correção usava o método de colar do ditado do usuário (Ctrl + Shift + V), que muitos programas ignoram. A correção é texto puro, então cola sempre com **Ctrl + V**. Cada Aplicar registra no log o que aconteceu (colado, copiado porque a janela não voltou, erro).
+- **Painel espera a escolha.** O atalho abre o painel mostrando o texto original e as opções, sem gerar nada. O modelo local começa a carregar já nesse momento (com a barra de carregamento visível se demorar).
+- **Estilos (processamento):** 1 Meu estilo, 2 Formal, 3 Descolado, 4 Poético. Escolha por número, clique, ou **Enter** (= o primeiro estilo, Meu estilo). Trocar de estilo refaz a partir do original e descarta os ajustes.
+- **Ajustes (pós-processamento):** 5 Encurtar, 6 Desenvolver, 7 Traduzir, 8 Melhorar argumentos. Agem **em cima do resultado atual** e podem ser encadeados (ex.: Formal → Encurtar → Traduzir). Antes de escolher um estilo, um ajuste age sobre o texto original.
+- Na prévia: Enter aplica, Ctrl + C copia, Esc / clicar fora / digitar / o atalho de novo fecham (como antes); Tab troca a visão; Original mostra sempre o texto de partida.
+- **Atalho próprio de tradução** (padrão Ctrl + Shift + a tecla ao lado do Z, configurável): abre o painel já traduzindo o texto selecionado (ou a caixa inteira), sem esperar escolha.
+- Configurações: duas listas editáveis, Estilos e Ajustes (cada uma com até 9 itens; os números seguem a ordem: estilos primeiro, depois ajustes, até 9 no total para atalho por número; os demais só com clique).
+- Migração: "Meu estilo" fica; "Mais formal" vira o estilo "Formal"; "Mais curto" vira o ajuste "Encurtar"; "Desenvolver", "Traduzir" e "Melhorar argumentos" viram ajustes; entram os estilos "Descolado" e "Poético". Itens editados pelo usuário mantêm o texto e só ganham o tipo.

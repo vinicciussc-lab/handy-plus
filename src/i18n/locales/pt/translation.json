@@ -976,7 +976,31 @@
   "overlay": {
     "transcribing": "Transcrevendo...",
     "processing": "Processando...",
-    "loadingModel": "Carregando modelo..."
+    "loadingModel": "Carregando modelo...",
+    "correction": {
+      "loadingModel": "Carregando modelo",
+      "generating": "Gerando texto",
+      "ready": "Pronto em {{s}} s",
+      "applied": "Corrigido",
+      "undoHint": "Ctrl + Z desfaz",
+      "copied": "Correção copiada, cole com Ctrl + V",
+      "apply": "aplicar",
+      "otherTone": "outro tom",
+      "cancel": "cancelar",
+      "gpuFull": "Placa de vídeo cheia",
+      "cloud": "Nuvem",
+      "cpu": "Processador",
+      "errors": {
+        "nothing_selected": "Nenhum texto selecionado",
+        "text_too_long": "Texto grande demais",
+        "no_model_chosen": "Escolha um modelo nas configurações",
+        "model_missing": "Modelo não encontrado",
+        "engine_failed": "O modelo local falhou",
+        "cloud_failed": "A IA na nuvem falhou",
+        "keys_held": "Solte as teclas e tente de novo",
+        "clipboard_failed": "Não deu para copiar o texto"
+      }
+    }
   },
   "secureInput": {
     "blockedWithCulprit_one": "{{name}} pode estar bloqueando 1 atalho",

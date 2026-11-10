@@ -1,0 +1,227 @@
+/* Correction panel: a card (progress, streamed text, preview) above a pill.
+   Lives in the 480x260 overlay window; the card scrolls inside instead of
+   overflowing. Colors and fonts come from RecordingOverlay.css. */
+.cor-wrap {
+  --cor-ok: #34b87c;
+  --cor-pill-h: 32px;
+  --cor-gap: 8px;
+  width: min(456px, calc(100vw - 4px));
+  max-height: calc(100vh - 2px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cor-gap);
+  min-height: 0;
+}
+.cor-wrap.top {
+  flex-direction: column-reverse;
+}
+
+.cor-card {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 0;
+  max-height: calc(100vh - var(--cor-pill-h) - var(--cor-gap) - 4px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--s-surface);
+  border: 1px solid var(--s-border);
+  color: var(--color-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cor-pill {
+  flex: none;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: var(--cor-pill-h);
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  background: var(--s-surface);
+  border: 1px solid var(--s-border);
+  color: var(--color-text);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cor-ok {
+  color: var(--cor-ok);
+  font-weight: 700;
+}
+.cor-err {
+  color: var(--color-error);
+}
+
+/* Progress rows */
+.cor-phase {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0;
+  color: var(--s-muted);
+}
+.cor-phase.wait {
+  opacity: 0.45;
+}
+.cor-lbl {
+  width: 112px;
+  flex: none;
+}
+.cor-pct {
+  width: 34px;
+  flex: none;
+  text-align: right;
+  color: var(--s-faint);
+  font-variant-numeric: tabular-nums;
+}
+.cor-pct.ok {
+  color: var(--cor-ok);
+}
+.cor-bar {
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--s-hair);
+}
+.cor-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--color-warning);
+  transition: width 200ms ease;
+}
+.cor-bar i.done {
+  background: var(--cor-ok);
+}
+.cor-bar i.run {
+  animation: cor-grow 1.2s ease-in-out infinite alternate;
+}
+@keyframes cor-grow {
+  from {
+    width: 25%;
+    margin-left: 0;
+  }
+  to {
+    width: 40%;
+    margin-left: 60%;
+  }
+}
+
+/* Streamed text */
+.cor-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.cor-stream {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--s-hair);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.cor-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: -2px;
+  background: var(--color-warning);
+  animation: cor-blink 1.05s steps(1) infinite;
+}
+@keyframes cor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Preview */
+.cor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px;
+  gap: 10px;
+  min-height: 0;
+  /* The text and the tone list scroll on their own; the hint stays visible. */
+  max-height: calc(100vh - var(--cor-pill-h) - var(--cor-gap) - 70px);
+}
+.cor-text {
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cor-added {
+  color: var(--cor-ok);
+  background: color-mix(in srgb, var(--cor-ok) 18%, transparent);
+  border-radius: 2px;
+}
+.cor-removed {
+  color: var(--color-error);
+  text-decoration: line-through;
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+  border-radius: 2px;
+}
+.cor-tones {
+  border-inline-start: 1px solid var(--s-hair);
+  padding-inline-start: 8px;
+}
+.cor-tones > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: var(--s-muted);
+}
+.cor-tones > div.on {
+  background: var(--s-hair);
+  color: var(--color-text);
+}
+.cor-tone-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cor-n {
+  color: var(--s-faint);
+}
+.cor-hint {
+  flex: none;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--s-hair);
+  color: var(--s-faint);
+  font-size: 11px;
+}
+.cor-key {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid var(--s-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--s-hair);
+  color: var(--color-text);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* Fallback choice */
+.cor-fb-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.cor-fb-list > div {
+  padding: 3px 0;
+}

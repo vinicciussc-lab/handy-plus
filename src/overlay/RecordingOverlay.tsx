@@ -4,12 +4,14 @@ import { useTranslation } from "react-i18next";
 import "./RecordingOverlay.css";
 import { commands, events } from "@/bindings";
 import type {
+  CorrectionUpdateEvent,
   Notice,
   StreamPhase,
   StreamPhaseEvent,
   StreamTextEvent,
   StreamWorkKind,
 } from "@/bindings";
+import CorrectionPanel from "./correction/CorrectionPanel";
 import { NoticeBadgeIcon } from "@/components/icons/NoticeBadgeIcon";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { noticeDisplay } from "@/lib/notices";
@@ -22,7 +24,8 @@ type OverlayState =
   | "transcribing"
   | "processing"
   | "notice"
-  | "live_notice";
+  | "live_notice"
+  | "correction";
 
 const isNoticeState = (state: OverlayState) =>
   state === "notice" || state === "live_notice";
@@ -80,6 +83,9 @@ const RecordingOverlay: React.FC = () => {
   // while overflowing, so the resting first line stays crisp flush under the pill.
   const [overflowing, setOverflowing] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [correction, setCorrection] = useState<CorrectionUpdateEvent | null>(
+    null,
+  );
   const [noticeWidth, setNoticeWidth] = useState<number>();
   const noticeProbeRef = useRef<HTMLSpanElement>(null);
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -146,6 +152,7 @@ const RecordingOverlay: React.FC = () => {
         fadeTimerRef.current = setTimeout(() => {
           setNotice(null);
           setStreamText({ committed: "", tentative: "" });
+          setCorrection(null);
         }, OVERLAY_FADE_MS);
       });
 
@@ -169,6 +176,12 @@ const RecordingOverlay: React.FC = () => {
       const unlistenStream = await events.streamTextEvent.listen((event) => {
         setStreamText(event.payload);
       });
+
+      const unlistenCorrection = await events.correctionUpdateEvent.listen(
+        (event) => {
+          setCorrection(event.payload);
+        },
+      );
 
       const unlistenPhase = await events.streamPhaseEvent.listen((event) => {
         const payload: StreamPhaseEvent = event.payload;
@@ -210,6 +223,7 @@ const RecordingOverlay: React.FC = () => {
         unlistenReady();
         unlistenLevel();
         unlistenStream();
+        unlistenCorrection();
         unlistenPhase();
         unlistenModel();
         clearTimeout(modelLoadTimerRef.current);
@@ -352,6 +366,17 @@ const RecordingOverlay: React.FC = () => {
   const dismissNotice = shownNotice
     ? () => commands.dismissOverlayNotice()
     : undefined;
+
+  // ---- Correction: progress, preview and result pills (480x260 window) ----
+  if (state === "correction") {
+    return (
+      <CorrectionPanel
+        update={correction}
+        position={position}
+        visible={isVisible}
+      />
+    );
+  }
 
   // ---- Live overlay: a pill that sculpts open into a panel ----
   const liveNotice = state === "live_notice" ? shownNotice : null;

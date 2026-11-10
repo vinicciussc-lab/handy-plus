@@ -976,7 +976,31 @@
   "overlay": {
     "transcribing": "Transkribiere...",
     "processing": "Verarbeite...",
-    "loadingModel": "Modell wird geladen..."
+    "loadingModel": "Modell wird geladen...",
+    "correction": {
+      "loadingModel": "Loading model",
+      "generating": "Generating text",
+      "ready": "Ready in {{s}} s",
+      "applied": "Corrected",
+      "undoHint": "Ctrl + Z to undo",
+      "copied": "Correction copied, paste with Ctrl + V",
+      "apply": "apply",
+      "otherTone": "other tone",
+      "cancel": "cancel",
+      "gpuFull": "GPU memory full",
+      "cloud": "Cloud",
+      "cpu": "CPU",
+      "errors": {
+        "nothing_selected": "No text selected",
+        "text_too_long": "Text too long",
+        "no_model_chosen": "Choose a model in settings",
+        "model_missing": "Model not found",
+        "engine_failed": "The local model failed",
+        "cloud_failed": "The cloud AI failed",
+        "keys_held": "Release the keys and try again",
+        "clipboard_failed": "Could not copy the text"
+      }
+    }
   },
   "secureInput": {
     "blockedWithCulprit_one": "{{name}} blockiert möglicherweise 1 Tastenkürzel",

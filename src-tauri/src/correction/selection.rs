@@ -3,13 +3,16 @@
 
 use crate::clipboard::{with_enigo, with_paste_lock, write_text_to_clipboard};
 use crate::input;
-use log::{debug, warn};
+use log::{info, warn};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 const MODIFIER_RELEASE_TIMEOUT: Duration = Duration::from_millis(600);
-const COPY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const COPY_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// The clipboard must stay unchanged this long after the text first appears
+/// before it is read: some apps write it in several steps.
+const SETTLE_MS: u64 = 150;
 const COPY_TIMEOUT: Duration = Duration::from_millis(1000);
 const LATE_WRITE_GRACE: Duration = Duration::from_millis(300);
 const COPY_HOLD_MS: u64 = 50;
@@ -115,6 +118,11 @@ fn clipboard_sequence() -> Option<u32> {
     None
 }
 
+/// True once the clipboard has stayed unchanged for `SETTLE_MS`.
+fn settled(last_change_ms: u64, now_ms: u64) -> bool {
+    now_ms >= last_change_ms && now_ms - last_change_ms >= SETTLE_MS
+}
+
 /// True when someone wrote to the clipboard after our restore, so the restore
 /// has to be redone.
 fn should_rerestore(after_restore: Option<u32>, now: Option<u32>) -> bool {
@@ -140,8 +148,8 @@ pub fn capture_selection(app: &AppHandle) -> Result<Captured, CaptureError> {
     if is_blank_selection(&text) {
         return Err(CaptureError::NothingSelected);
     }
-    debug!(
-        "Captured {} chars (whole field: {whole_field})",
+    info!(
+        "Captured {} chars (whole_field={whole_field})",
         text.chars().count()
     );
     Ok(Captured {
@@ -210,8 +218,8 @@ fn copy_and_restore(app: &AppHandle) -> Result<(String, bool), CaptureError> {
     Ok((text, whole_field))
 }
 
-/// Clears the clipboard, sends Ctrl+C and polls for the copied text. Returns an
-/// empty string when nothing arrived. Does not restore the clipboard.
+/// Clears the clipboard, sends Ctrl+C and polls for the copied text, reading it
+/// only once the clipboard has settled. Returns an empty string when nothing arrived. Does not restore the clipboard.
 fn copy_selection(app: &AppHandle) -> Result<String, String> {
     let clipboard = app.clipboard();
     clipboard
@@ -221,15 +229,31 @@ fn copy_selection(app: &AppHandle) -> Result<String, String> {
     with_enigo(app, |enigo| input::send_copy_ctrl_c(enigo, COPY_HOLD_MS))?;
 
     let start = Instant::now();
+    // What was last read, the clipboard sequence it came with and when it
+    // last changed. Where the sequence is unavailable the text itself is
+    // compared.
+    let mut last: Option<(String, Option<u32>)> = None;
+    let mut last_change_ms = 0u64;
     loop {
         std::thread::sleep(COPY_POLL_INTERVAL);
+        let now_ms = start.elapsed().as_millis() as u64;
         if let Ok(text) = clipboard.read_text() {
             if !text.is_empty() {
-                return Ok(text);
+                let seq = clipboard_sequence();
+                let unchanged = matches!(&last, Some((t, s)) if *t == text && *s == seq);
+                if unchanged {
+                    if settled(last_change_ms, now_ms) {
+                        return Ok(text);
+                    }
+                } else {
+                    last = Some((text, seq));
+                    last_change_ms = now_ms;
+                }
             }
         }
         if start.elapsed() >= COPY_TIMEOUT {
-            return Ok(String::new());
+            // Out of time: use what is there, if anything arrived.
+            return Ok(last.map(|(t, _)| t).unwrap_or_default());
         }
     }
 }
@@ -298,6 +322,16 @@ mod tests {
     fn whitespace_only_selection_counts_as_nothing() {
         assert!(is_blank_selection("  \n\t "));
         assert!(!is_blank_selection(" oi "));
+    }
+
+    #[test]
+    fn settles_only_after_the_quiet_period() {
+        assert!(!settled(0, 0));
+        assert!(!settled(100, 249));
+        assert!(settled(100, 250));
+        assert!(settled(0, 1000));
+        // A clock that did not advance never counts as settled.
+        assert!(!settled(500, 400));
     }
 
     #[test]

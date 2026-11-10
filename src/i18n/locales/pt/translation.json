@@ -910,6 +910,10 @@
       "hotkey": {
         "title": "Atalho"
       },
+      "typingHint": {
+        "label": "Mostrar dica do atalho ao digitar",
+        "description": "Quando você digita algumas palavras e para, uma pílula pequena mostra o atalho de correção por alguns segundos. Clique nela para corrigir o texto."
+      },
       "provider": {
         "title": "Modelo",
         "label": "Provedor",
@@ -1095,6 +1099,9 @@
         "keys_held": "Solte as teclas e tente de novo",
         "clipboard_failed": "Não deu para copiar o texto"
       }
+    },
+    "typingHint": {
+      "text": "para melhorar o texto"
     }
   },
   "secureInput": {

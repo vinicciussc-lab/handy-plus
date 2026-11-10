@@ -33,6 +33,13 @@ async listLocalModels(dir: string) : Promise<LocalModel[]> {
 async correctionUiAction(action: UiAction) : Promise<void> {
     await TAURI_INVOKE("correction_ui_action", { action });
 },
+/**
+ * The typing hint was clicked: the same path as the shortcut. The hint pill
+ * never takes focus, so the user's program still has it.
+ */
+async correctionHintClicked() : Promise<void> {
+    await TAURI_INVOKE("correction_hint_clicked");
+},
 async resetBinding(id: string) : Promise<Result<BindingResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reset_binding", { id }) };
@@ -1255,7 +1262,11 @@ defaults_version?: number;
 /**
  * Soft sounds when a correction starts and when the preview is ready.
  */
-sounds?: boolean }
+sounds?: boolean; 
+/**
+ * After some typing and a pause, a pill shows the correction shortcut.
+ */
+typing_hint?: boolean }
 export type CorrectionTone = { id: string; name: string; goal: string }
 /**
  * Everything the correction panel shows. Sent whenever it changes.

@@ -72,6 +72,9 @@ pub struct CorrectionSettings {
     /// Soft sounds when a correction starts and when the preview is ready.
     #[serde(default = "default_true")]
     pub sounds: bool,
+    /// After some typing and a pause, a pill shows the correction shortcut.
+    #[serde(default = "default_true")]
+    pub typing_hint: bool,
 }
 
 fn default_true() -> bool {
@@ -193,6 +196,7 @@ impl Default for CorrectionSettings {
             last_load_ms: HashMap::new(),
             defaults_version: CURRENT_DEFAULTS_VERSION,
             sounds: true,
+            typing_hint: true,
         }
     }
 }
@@ -536,6 +540,21 @@ mod tests {
         assert!(salvaged.sounds);
         let off = parse_or_salvage(&serde_json::json!({"sounds": false, "unload_timeout": "nope"}));
         assert!(!off.sounds);
+    }
+
+    #[test]
+    fn typing_hint_default_on() {
+        assert!(CorrectionSettings::default().typing_hint);
+        let s: CorrectionSettings = serde_json::from_str("{}").unwrap();
+        assert!(s.typing_hint);
+        let salvaged = parse_or_salvage(&serde_json::json!({"unload_timeout": "nope"}));
+        assert!(salvaged.typing_hint);
+        let off =
+            parse_or_salvage(&serde_json::json!({"typing_hint": false, "unload_timeout": "nope"}));
+        assert!(!off.typing_hint);
+        let bad = parse_or_salvage(&serde_json::json!({"typing_hint": "yes", "sounds": false}));
+        assert!(bad.typing_hint);
+        assert!(!bad.sounds);
     }
 
     #[test]

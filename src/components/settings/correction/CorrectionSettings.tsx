@@ -76,6 +76,14 @@ export const CorrectionSettings: React.FC = () => {
           descriptionMode="tooltip"
           grouped={true}
         />
+        <ToggleSwitch
+          checked={settings.typing_hint ?? true}
+          onChange={(typing_hint) => update({ typing_hint })}
+          label={t("settings.correction.typingHint.label")}
+          description={t("settings.correction.typingHint.description")}
+          descriptionMode="tooltip"
+          grouped={true}
+        />
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.correction.sounds.title")}>

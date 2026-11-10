@@ -663,19 +663,38 @@ pub fn correction_ui_action(app: AppHandle, action: UiAction) {
     input(&app, SessionInput::Ui(action));
 }
 
+/// A dictation is recording, transcribing, post-processing or pasting. The
+/// tray state is set on every dictation start, finish and cancel (even with no
+/// tray icon) and stays busy until the paste is done.
+pub fn dictation_busy(app: &AppHandle) -> bool {
+    crate::tray::dictation_in_progress(app)
+        || app
+            .try_state::<Arc<AudioRecordingManager>>()
+            .is_some_and(|m| m.is_recording())
+}
+
+/// A correction session is running (from the shortcut to the panel closing).
+pub fn session_active(app: &AppHandle) -> bool {
+    app.try_state::<CorrectionSessionState>()
+        .is_some_and(|s| s.active.load(Ordering::SeqCst))
+}
+
+/// The typing hint was clicked: the same path as the shortcut. The hint pill
+/// never takes focus, so the user's program still has it.
+#[tauri::command]
+#[specta::specta]
+pub fn correction_hint_clicked(app: AppHandle) {
+    overlay::hide_hint_overlay(&app);
+    begin(&app);
+}
+
 /// The correction shortcut: starts a correction, or closes the open one.
 /// Ignored while a dictation is recording or being processed.
 pub fn begin(app: &AppHandle) {
     let Some(state) = app.try_state::<CorrectionSessionState>() else {
         return;
     };
-    // The tray state is set on every dictation start, finish and cancel (even
-    // with no tray icon) and stays busy until the paste is done.
-    let dictation_busy = crate::tray::dictation_in_progress(app)
-        || app
-            .try_state::<Arc<AudioRecordingManager>>()
-            .is_some_and(|m| m.is_recording());
-    match shortcut_route(dictation_busy, state.active.load(Ordering::SeqCst)) {
+    match shortcut_route(dictation_busy(app), state.active.load(Ordering::SeqCst)) {
         ShortcutRoute::Close => {
             input(app, SessionInput::Shortcut);
             return;

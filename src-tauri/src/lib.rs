@@ -688,6 +688,7 @@ pub fn run(cli_args: CliArgs) {
             correction::settings::set_correction_settings_cmd,
             correction::models::list_local_models,
             correction::session::correction_ui_action,
+            correction::session::correction_hint_clicked,
             shortcut::reset_binding,
             shortcut::change_shortcut_activation_setting,
             shortcut::change_hold_threshold_ms_setting,
@@ -1110,6 +1111,8 @@ pub fn run(cli_args: CliArgs) {
             correction::session::init(&app_handle);
             // Handy Plus: clicks and typing close the correction panel.
             correction::session::watch_input_hooks(&app_handle);
+            // Handy Plus: after some typing, a pill shows the correction shortcut.
+            correction::typing_hint::start(&app_handle);
 
             // Secure Input monitor (macOS): detects stuck secure input that
             // silently blocks keyed shortcuts, warns the user, and activates

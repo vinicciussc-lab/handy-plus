@@ -12,6 +12,7 @@ import type {
   StreamWorkKind,
 } from "@/bindings";
 import CorrectionPanel from "./correction/CorrectionPanel";
+import HintPill from "./hint/HintPill";
 import { NoticeBadgeIcon } from "@/components/icons/NoticeBadgeIcon";
 import i18n, { syncLanguageFromSettings } from "@/i18n";
 import { noticeDisplay } from "@/lib/notices";
@@ -25,7 +26,8 @@ type OverlayState =
   | "processing"
   | "notice"
   | "live_notice"
-  | "correction";
+  | "correction"
+  | "hint";
 
 const isNoticeState = (state: OverlayState) =>
   state === "notice" || state === "live_notice";
@@ -86,6 +88,8 @@ const RecordingOverlay: React.FC = () => {
   const [correction, setCorrection] = useState<CorrectionUpdateEvent | null>(
     null,
   );
+  // The correction shortcut the typing hint shows, as stored ("ctrl+section").
+  const [hintBinding, setHintBinding] = useState("");
   const [noticeWidth, setNoticeWidth] = useState<number>();
   const noticeProbeRef = useRef<HTMLSpanElement>(null);
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -103,6 +107,10 @@ const RecordingOverlay: React.FC = () => {
       const unlistenNotice = await listen<Notice>("overlay-notice", (event) => {
         clearTimeout(fadeTimerRef.current);
         setNotice(event.payload);
+      });
+
+      const unlistenHint = await listen<string>("typing-hint", (event) => {
+        setHintBinding(event.payload);
       });
 
       const unlistenShow = await listen("show-overlay", async (event) => {
@@ -218,6 +226,7 @@ const RecordingOverlay: React.FC = () => {
 
       return () => {
         unlistenNotice();
+        unlistenHint();
         unlistenShow();
         unlistenHide();
         unlistenReady();
@@ -374,6 +383,18 @@ const RecordingOverlay: React.FC = () => {
         update={correction}
         position={position}
         visible={isVisible}
+      />
+    );
+  }
+
+  // ---- Typing hint: the correction shortcut, clickable (340x44 window) ----
+  if (state === "hint") {
+    return (
+      <HintPill
+        binding={hintBinding}
+        position={position}
+        visible={isVisible}
+        dir={direction}
       />
     );
   }

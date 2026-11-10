@@ -10,3 +10,4 @@ pub mod session;
 pub mod settings;
 pub mod stream;
 pub mod text;
+pub mod typing_hint;

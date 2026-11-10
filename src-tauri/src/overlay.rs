@@ -60,6 +60,11 @@ const CORRECTION_STATE: &str = "correction";
 const CORRECTION_WIDTH: f64 = 760.0;
 const CORRECTION_HEIGHT: f64 = 460.0;
 
+// Handy Plus: the typing hint ("<shortcut> to improve the text").
+const HINT_STATE: &str = "hint";
+const HINT_WIDTH: f64 = 340.0;
+const HINT_HEIGHT: f64 = 44.0;
+
 const NOTICE_STATE: &str = "notice";
 const LIVE_NOTICE_STATE: &str = "live_notice";
 
@@ -84,6 +89,8 @@ fn notice_state(session_is_live: bool) -> &'static str {
 fn overlay_dimensions(state: &str) -> (f64, f64) {
     if state == CORRECTION_STATE {
         (CORRECTION_WIDTH, CORRECTION_HEIGHT)
+    } else if state == HINT_STATE {
+        (HINT_WIDTH, HINT_HEIGHT)
     } else if is_live_state(state) {
         (OVERLAY_STREAM_WIDTH, OVERLAY_STREAM_HEIGHT)
     } else {
@@ -547,6 +554,8 @@ fn show_overlay_state_on_main(app_handle: &AppHandle, state: &str) {
         // Invalidate any delayed hide still in flight from a previous session
         // (see `hide_recording_overlay`).
         OVERLAY_SHOW_GENERATION.fetch_add(1, Ordering::SeqCst);
+        // Anything but the hint owns the overlay until it is hidden.
+        OVERLAY_IN_USE.store(state != HINT_STATE, Ordering::SeqCst);
 
         #[cfg(target_os = "linux")]
         let shown_with_layer_shell = if LAYER_SHELL_ACTIVE.load(Ordering::SeqCst) {
@@ -672,6 +681,44 @@ pub fn show_correction_overlay(app_handle: &AppHandle) {
     show_overlay_state(app_handle, CORRECTION_STATE);
 }
 
+/// Shows the typing hint pill (Handy Plus) with the correction shortcut's raw
+/// binding, which the overlay formats. Never over a dictation, a notice or the
+/// correction panel: those own the overlay until hidden, and showing any of
+/// them replaces the hint.
+pub fn show_hint_overlay(app_handle: &AppHandle, binding: String) {
+    if settings::get_settings(app_handle).overlay_style == OverlayStyle::None {
+        return;
+    }
+    let handle = app_handle.clone();
+    // On the main thread like every other show, so this check and the shows
+    // of the other states run in order.
+    let _ = app_handle.run_on_main_thread(move || {
+        if OVERLAY_IN_USE.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = handle.emit_to("recording_overlay", "typing-hint", binding);
+        show_overlay_state_on_main(&handle, HINT_STATE);
+        let generation = OVERLAY_SHOW_GENERATION.load(Ordering::SeqCst);
+        OVERLAY_HINT_GENERATION.store(generation, Ordering::SeqCst);
+    });
+}
+
+/// Hides the typing hint, unless something else has replaced it.
+pub fn hide_hint_overlay(app_handle: &AppHandle) {
+    let shown = OVERLAY_SHOW_GENERATION.load(Ordering::SeqCst);
+    if OVERLAY_HINT_GENERATION
+        .compare_exchange(shown, u64::MAX, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        hide_recording_overlay(app_handle);
+    }
+}
+
+/// The overlay shows a dictation, a notice or the correction panel.
+pub fn overlay_in_use() -> bool {
+    OVERLAY_IN_USE.load(Ordering::SeqCst)
+}
+
 /// Shows `notice` in place of the session's overlay and fades it after
 /// [`NOTICE_HOLD`] unless something newer has shown. With the overlay off, it
 /// still hides the session's overlay in case the setting changed mid-session.
@@ -769,6 +816,13 @@ static OVERLAY_SHOW_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// `OVERLAY_SHOW_GENERATION`.
 static OVERLAY_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(u64::MAX);
 
+/// The show generation of the latest typing hint; it's on screen while this
+/// matches `OVERLAY_SHOW_GENERATION`.
+static OVERLAY_HINT_GENERATION: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Set from showing anything but the typing hint until the overlay is hidden.
+static OVERLAY_IN_USE: AtomicBool = AtomicBool::new(false);
+
 /// Set while the overlay shows a recording or transcribing session.
 static OVERLAY_SESSION_SHOWING: AtomicBool = AtomicBool::new(false);
 
@@ -779,6 +833,7 @@ static OVERLAY_SESSION_LIVE: AtomicBool = AtomicBool::new(false);
 /// Hides the recording overlay window with fade-out animation
 pub fn hide_recording_overlay(app_handle: &AppHandle) {
     OVERLAY_SESSION_SHOWING.store(false, Ordering::SeqCst);
+    OVERLAY_IN_USE.store(false, Ordering::SeqCst);
     OVERLAY_SESSION_LIVE.store(false, Ordering::SeqCst);
     // Always hide the overlay regardless of settings - if setting was changed while recording,
     // we still want to hide it properly
@@ -874,6 +929,12 @@ mod tests {
             overlay_dimensions("recording"),
             (OVERLAY_WIDTH, OVERLAY_HEIGHT)
         );
+    }
+
+    #[test]
+    fn hint_state_uses_its_own_pill_size() {
+        assert_eq!(overlay_dimensions("hint"), (HINT_WIDTH, HINT_HEIGHT));
+        assert_eq!(overlay_dimensions("hint"), (340.0, 44.0));
     }
 
     #[test]

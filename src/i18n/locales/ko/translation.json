@@ -910,6 +910,10 @@
       "hotkey": {
         "title": "Shortcut"
       },
+      "typingHint": {
+        "label": "Show the shortcut hint while typing",
+        "description": "After you type a few words and pause, a small pill shows the correction shortcut for a few seconds. Click it to correct the text."
+      },
       "provider": {
         "title": "Model",
         "label": "Provider",
@@ -1095,6 +1099,9 @@
         "keys_held": "Release the keys and try again",
         "clipboard_failed": "Could not copy the text"
       }
+    },
+    "typingHint": {
+      "text": "to improve the text"
     }
   },
   "secureInput": {

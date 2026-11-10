@@ -10,6 +10,9 @@ use tauri_plugin_store::StoreExt;
 
 pub const CORRECTION_STORE_PATH: &str = "correction_store.json";
 const CORRECTION_STORE_KEY: &str = "correction_settings";
+/// Bump when new default tones should be offered once to existing users.
+pub const CURRENT_DEFAULTS_VERSION: u32 = 2;
+const MAX_TONES: usize = 9;
 
 pub const DEFAULT_STYLE_RULES: &str = "Você revisa textos em português do Brasil escritos pelo usuário para WhatsApp, Discord, e-mail e comentários na internet.
 Siga o objetivo abaixo. Quando ele pedir só correção, mexa o mínimo; quando pedir para reescrever ou reorganizar, você pode mudar a estrutura, a ordem das ideias e as frases.
@@ -63,7 +66,16 @@ pub struct CorrectionSettings {
     pub tones: Vec<CorrectionTone>,
     /// Duration of the last model load, in milliseconds, keyed by model path.
     pub last_load_ms: HashMap<String, u64>,
+    /// Version of the built-in defaults already offered to this store (0 for old stores).
+    #[serde(default = "zero_defaults_version")]
+    pub defaults_version: u32,
 }
+
+fn zero_defaults_version() -> u32 {
+    0
+}
+
+const DESENVOLVER_GOAL: &str = "Desenvolva o texto: explique melhor cada ideia, acrescente detalhes, exemplos ou justificativas que deixem o raciocínio completo, e organize em parágrafos se ficar longo. Mantenha o jeito de falar do usuário e a mesma opinião. Não invente fatos específicos, como números, nomes ou datas, que não estavam no texto.";
 
 pub fn default_tones() -> Vec<CorrectionTone> {
     let tone = |id: &str, name: &str, goal: &str| CorrectionTone {
@@ -92,6 +104,11 @@ pub fn default_tones() -> Vec<CorrectionTone> {
             "Melhorar argumentos",
             "Reorganize o texto para convencer melhor: comece pela ideia principal, coloque os argumentos numa ordem lógica, junte ou separe frases quando ajudar, ligue as ideias com conectivos simples e termine com uma conclusão clara. Pode mudar bastante a estrutura, mas não invente fatos nem mude a opinião do usuário.",
         ),
+        tone(
+            "desenvolver",
+            "Desenvolver",
+            DESENVOLVER_GOAL,
+        ),
     ]
 }
 
@@ -116,7 +133,7 @@ fn old_tones_v1() -> Vec<CorrectionTone> {
 
 /// Replaces the first release defaults with the current ones when the user
 /// never edited them. Edited rules or tone goals are left untouched.
-pub fn migrate_old_defaults(s: &mut CorrectionSettings) -> bool {
+pub fn migrate_defaults(s: &mut CorrectionSettings) -> bool {
     let mut changed = false;
     if s.style_rules == OLD_STYLE_RULES_V1 {
         s.style_rules = DEFAULT_STYLE_RULES.to_string();
@@ -135,6 +152,15 @@ pub fn migrate_old_defaults(s: &mut CorrectionSettings) -> bool {
             changed = true;
         }
     }
+    if s.defaults_version < 2 {
+        if !s.tones.iter().any(|t| t.id == "desenvolver") && s.tones.len() < MAX_TONES {
+            if let Some(tone) = new_tones.into_iter().find(|t| t.id == "desenvolver") {
+                s.tones.push(tone);
+            }
+        }
+        s.defaults_version = CURRENT_DEFAULTS_VERSION;
+        changed = true;
+    }
     changed
 }
 
@@ -149,6 +175,7 @@ impl Default for CorrectionSettings {
             style_rules: DEFAULT_STYLE_RULES.to_string(),
             tones: default_tones(),
             last_load_ms: HashMap::new(),
+            defaults_version: CURRENT_DEFAULTS_VERSION,
         }
     }
 }
@@ -160,7 +187,7 @@ pub fn get_correction_settings(app: &AppHandle) -> CorrectionSettings {
     match store.get(CORRECTION_STORE_KEY) {
         Some(value) => {
             let mut settings = parse_or_salvage(&value);
-            if migrate_old_defaults(&mut settings) {
+            if migrate_defaults(&mut settings) {
                 write_correction_settings(app, &settings);
             }
             settings
@@ -188,6 +215,12 @@ fn salvage(stored: &serde_json::Value) -> CorrectionSettings {
     };
     let mut merged =
         serde_json::to_value(CorrectionSettings::default()).expect("defaults serialize");
+    if !stored_map.contains_key("defaults_version") {
+        merged
+            .as_object_mut()
+            .expect("merged stays an object")
+            .insert("defaults_version".into(), 0.into());
+    }
     for (key, value) in stored_map {
         let map = merged.as_object_mut().expect("merged stays an object");
         let previous = map.insert(key.clone(), value.clone());
@@ -234,7 +267,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_tones_are_the_four_from_the_spec() {
+    fn default_tones_are_the_five_from_the_spec() {
         let names: Vec<_> = default_tones().into_iter().map(|t| t.name).collect();
         assert_eq!(
             names,
@@ -242,8 +275,78 @@ mod tests {
                 "Meu estilo",
                 "Mais formal",
                 "Mais curto",
-                "Melhorar argumentos"
+                "Melhorar argumentos",
+                "Desenvolver"
             ]
+        );
+    }
+
+    #[test]
+    fn defaults_include_desenvolver_last() {
+        let t = default_tones();
+        assert_eq!(t.len(), 5);
+        assert_eq!(
+            (t[4].id.as_str(), t[4].name.as_str()),
+            ("desenvolver", "Desenvolver")
+        );
+    }
+
+    #[test]
+    fn old_store_gets_desenvolver_once() {
+        let mut s = CorrectionSettings {
+            tones: default_tones()[..4].to_vec(),
+            defaults_version: 0,
+            ..Default::default()
+        };
+        assert!(migrate_defaults(&mut s));
+        assert_eq!(s.tones.len(), 5);
+        assert_eq!(s.defaults_version, 2);
+        s.tones.pop();
+        assert!(!migrate_defaults(&mut s));
+        assert_eq!(s.tones.len(), 4);
+    }
+
+    #[test]
+    fn full_tone_list_is_not_extended() {
+        let mut tones = default_tones()[..4].to_vec();
+        while tones.len() < 9 {
+            tones.push(CorrectionTone {
+                id: format!("t{}", tones.len()),
+                name: "x".into(),
+                goal: "y".into(),
+            });
+        }
+        let mut s = CorrectionSettings {
+            tones,
+            defaults_version: 0,
+            ..Default::default()
+        };
+        migrate_defaults(&mut s);
+        assert_eq!(s.tones.len(), 9);
+        assert_eq!(s.defaults_version, 2);
+    }
+
+    #[test]
+    fn existing_desenvolver_is_not_duplicated() {
+        let mut s = CorrectionSettings {
+            defaults_version: 0,
+            ..Default::default()
+        };
+        assert!(migrate_defaults(&mut s));
+        assert_eq!(s.tones.len(), 5);
+        assert_eq!(s.defaults_version, 2);
+    }
+
+    #[test]
+    fn store_without_version_field_reads_as_zero() {
+        let s: CorrectionSettings = serde_json::from_str(r#"{"models_dir":"E:\\m"}"#).unwrap();
+        assert_eq!(s.defaults_version, 0);
+        // Salvage path (one invalid field) must also treat a missing version as 0.
+        let salvaged = parse_or_salvage(&serde_json::json!({"unload_timeout": "nope"}));
+        assert_eq!(salvaged.defaults_version, 0);
+        assert_eq!(
+            CorrectionSettings::default().defaults_version,
+            CURRENT_DEFAULTS_VERSION
         );
     }
 
@@ -265,7 +368,7 @@ mod tests {
     fn settings_missing_fields_fall_back_to_defaults() {
         let s: CorrectionSettings = serde_json::from_str(r#"{"models_dir":"E:\\m"}"#).unwrap();
         assert_eq!(s.models_dir, r"E:\m");
-        assert_eq!(s.tones.len(), 4);
+        assert_eq!(s.tones.len(), 5);
     }
 
     #[test]
@@ -287,9 +390,10 @@ mod tests {
         let mut s = CorrectionSettings {
             style_rules: OLD_STYLE_RULES_V1.into(),
             tones: old_tones_v1(),
+            defaults_version: 0,
             ..Default::default()
         };
-        assert!(migrate_old_defaults(&mut s));
+        assert!(migrate_defaults(&mut s));
         assert_eq!(s.style_rules, DEFAULT_STYLE_RULES);
         assert_eq!(s.tones, default_tones());
     }
@@ -301,9 +405,10 @@ mod tests {
         let mut s = CorrectionSettings {
             style_rules: "minhas regras".into(),
             tones,
+            defaults_version: 0,
             ..Default::default()
         };
-        assert!(migrate_old_defaults(&mut s));
+        assert!(migrate_defaults(&mut s));
         assert_eq!(s.style_rules, "minhas regras");
         assert_eq!(s.tones[1].goal, "meu objetivo");
         assert_eq!(s.tones[3].goal, default_tones()[3].goal);
@@ -319,7 +424,7 @@ mod tests {
             tones,
             ..Default::default()
         };
-        migrate_old_defaults(&mut s);
+        migrate_defaults(&mut s);
         assert_eq!(s.tones[2].goal, goal);
     }
 
@@ -328,10 +433,11 @@ mod tests {
         let mut s = CorrectionSettings {
             style_rules: OLD_STYLE_RULES_V1.into(),
             tones: old_tones_v1(),
+            defaults_version: 0,
             ..Default::default()
         };
-        assert!(migrate_old_defaults(&mut s));
-        assert!(!migrate_old_defaults(&mut s));
+        assert!(migrate_defaults(&mut s));
+        assert!(!migrate_defaults(&mut s));
     }
 
     #[test]
@@ -339,9 +445,10 @@ mod tests {
         let mut s = CorrectionSettings {
             style_rules: "minhas regras".into(),
             tones: old_tones_v1(),
+            defaults_version: 0,
             ..Default::default()
         };
-        assert!(migrate_old_defaults(&mut s));
+        assert!(migrate_defaults(&mut s));
         assert_eq!(s.style_rules, "minhas regras");
         assert_eq!(s.tones, default_tones());
     }
@@ -358,7 +465,7 @@ mod tests {
             tones: edited.clone(),
             ..Default::default()
         };
-        assert!(migrate_old_defaults(&mut s));
+        assert!(migrate_defaults(&mut s));
         assert_eq!(s.style_rules, DEFAULT_STYLE_RULES);
         assert_eq!(s.tones, edited);
     }
@@ -372,6 +479,6 @@ mod tests {
     #[test]
     fn non_object_value_falls_back_to_defaults() {
         let s = parse_or_salvage(&serde_json::json!(42));
-        assert_eq!(s.tones.len(), 4);
+        assert_eq!(s.tones.len(), 5);
     }
 }

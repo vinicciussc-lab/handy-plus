@@ -550,6 +550,14 @@ mod tests {
                 tone.name
             ));
             assert!(!out.contains('—') && !out.contains('–'));
+            if tone.id == "desenvolver" {
+                assert!(
+                    out.chars().count() >= TONES_SAMPLE.chars().count() * 130 / 100,
+                    "Desenvolver did not expand enough: {} vs {}",
+                    out.chars().count(),
+                    TONES_SAMPLE.chars().count()
+                );
+            }
             if tone.id == "mais_curto" {
                 assert!(
                     out.chars().count() < TONES_SAMPLE.chars().count() * 85 / 100,

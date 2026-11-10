@@ -1241,7 +1241,11 @@ fallback: CloudModel | null; style_rules: string; tones: CorrectionTone[];
 /**
  * Duration of the last model load, in milliseconds, keyed by model path.
  */
-last_load_ms: Partial<{ [key in string]: number }> }
+last_load_ms: Partial<{ [key in string]: number }>; 
+/**
+ * Version of the built-in defaults already offered to this store (0 for old stores).
+ */
+defaults_version?: number }
 export type CorrectionTone = { id: string; name: string; goal: string }
 /**
  * Everything the correction panel shows. Sent whenever it changes.

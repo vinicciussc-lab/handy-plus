@@ -534,6 +534,7 @@ mod tests {
         );
         let mut meu_estilo_len: Option<usize> = None;
         let mut tone_failures: Vec<String> = Vec::new();
+        let mut meu_estilo_out = String::new();
         for tone in default_tones() {
             let (system, user) = build_messages(DEFAULT_STYLE_RULES, &tone.goal, TONES_SAMPLE);
             let raw = match stream_chat(&target, &system, &user, |_| {}).await {
@@ -555,6 +556,7 @@ mod tests {
                 tone_failures.push(format!("{} has a dash: {out}", tone.name));
             }
             if tone.id == "meu_estilo" {
+                meu_estilo_out = out.clone();
                 meu_estilo_len = Some(out.chars().count());
             }
             if tone.id == "desenvolver" {
@@ -573,9 +575,56 @@ mod tests {
                     ));
                 }
             }
-            if tone.id == "descolado" || tone.id == "poetico" {
-                if out.trim().is_empty() {
-                    tone_failures.push(format!("{} came back empty", tone.name));
+            if (tone.id == "descolado" || tone.id == "poetico") && out.trim().is_empty() {
+                tone_failures.push(format!("{} came back empty", tone.name));
+            }
+            if tone.id == "descolado" {
+                let plain = |t: &str| -> std::collections::HashSet<String> {
+                    t.split_whitespace()
+                        .map(|w| {
+                            w.trim_matches(|c: char| !c.is_alphanumeric())
+                                .to_lowercase()
+                        })
+                        .collect()
+                };
+                let (base, mine) = (plain(&meu_estilo_out), plain(&out));
+                let shared = base.intersection(&mine).count();
+                let markers = [
+                    "tá",
+                    "pra",
+                    "massa",
+                    "de boa",
+                    "sinceramente",
+                    "bora",
+                    "né",
+                    "tô",
+                    "cara",
+                    "mano",
+                    "top",
+                    "show",
+                    "demais",
+                    "rola",
+                    "vale muito",
+                    "tipo",
+                ];
+                let lowered = format!(" {} ", out.to_lowercase());
+                let found = markers
+                    .iter()
+                    .filter(|m| {
+                        lowered.contains(&format!(" {} ", m))
+                            || lowered.contains(&format!(" {},", m))
+                    })
+                    .count();
+                report.push_str(&format!(
+                    "descolado: {shared}/{} shared words with Meu estilo, {found} colloquial markers
+
+",
+                    base.len().max(mine.len())
+                ));
+                if found < 2 && shared * 100 >= base.len().max(mine.len()) * 80 {
+                    tone_failures.push(format!(
+                        "Descolado is too close to Meu estilo ({shared} shared, {found} markers): {out}"
+                    ));
                 }
             }
             if tone.id == "poetico" {
@@ -591,14 +640,14 @@ mod tests {
                     ));
                 }
             }
-            if tone.id == "mais_curto" {
-                if out.chars().count() >= TONES_SAMPLE.chars().count() * 85 / 100 {
-                    tone_failures.push(format!(
-                        "Mais curto did not shorten enough: {} vs {}",
-                        out.chars().count(),
-                        TONES_SAMPLE.chars().count()
-                    ));
-                }
+            if tone.id == "mais_curto"
+                && out.chars().count() >= TONES_SAMPLE.chars().count() * 85 / 100
+            {
+                tone_failures.push(format!(
+                    "Mais curto did not shorten enough: {} vs {}",
+                    out.chars().count(),
+                    TONES_SAMPLE.chars().count()
+                ));
             }
         }
 

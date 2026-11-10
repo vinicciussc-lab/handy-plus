@@ -102,7 +102,7 @@ const DESENVOLVER_GOAL: &str = "Desenvolva o texto de verdade: para cada ideia p
 
 const TRADUZIR_GOAL: &str = "Traduza o texto. Se ele estiver em português, traduza para o inglês; se já estiver em inglês, traduza para o português do Brasil. Use uma tradução natural, como uma pessoa nativa escreveria, mantendo o mesmo tom, o mesmo nível de formalidade e as mesmas ideias. Não explique a tradução. Esta tarefa é uma tradução, não uma correção, e é a exceção às regras acima sobre o idioma: se o texto estiver em português, a resposta tem que ser escrita inteira em inglês (English), sem nenhuma palavra em português; se estiver em inglês, a resposta tem que ser escrita inteira em português do Brasil. Nunca devolva o texto no mesmo idioma em que ele chegou.";
 
-const DESCOLADO_GOAL: &str = "Reescreva com um tom descontraído e leve, como numa conversa entre amigos: pode usar gírias comuns e expressões do dia a dia, sem exagerar e sem ficar forçado. Mantenha as ideias e a opinião do usuário.";
+const DESCOLADO_GOAL: &str = "Reescreva como se fosse uma mensagem de WhatsApp para um amigo próximo: bem informal e solto, não um texto corrigido. Troque as palavras mais certinhas por versões coloquiais do dia a dia (\"tá\", \"pra\", \"pro\", \"né\", \"cara\", \"massa\", \"de boa\", \"sinceramente\", \"bora\", \"tipo\") em pelo menos três lugares, quebre em frases curtas e diretas, e coloque uma interjeição ou exclamação leve (como \"olha\", \"cara\" ou \"poxa\") onde combinar. Corrija a ortografia, mantenha as mesmas ideias e a opinião do usuário e não invente fatos.";
 
 const POETICO_GOAL: &str = "Reescreva com um toque poético: escolha imagens e comparações bonitas, cuide do ritmo das frases e deixe o texto mais expressivo, sem perder o sentido nem inventar fatos. Nada de rimas forçadas.";
 
@@ -410,7 +410,7 @@ mod tests {
         let t = default_tones();
         assert!(t[2]
             .goal
-            .starts_with("Reescreva com um tom descontraído e leve"));
+            .starts_with("Reescreva como se fosse uma mensagem de WhatsApp"));
         assert!(t[3].goal.starts_with("Reescreva com um toque poético"));
         assert!(t[3].goal.ends_with("Nada de rimas forçadas."));
         assert!(t[6].goal.starts_with("Traduza o texto."));

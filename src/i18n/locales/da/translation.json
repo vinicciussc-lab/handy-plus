@@ -17,6 +17,7 @@
     "models": "Modeller",
     "advanced": "Avanceret",
     "postProcessing": "Efterbehandling",
+    "correction": "Text Correction",
     "history": "Historik",
     "debug": "Fejlfinding",
     "about": "Om"
@@ -348,6 +349,10 @@
           "transcribe_with_post_process": {
             "name": "Genvej til efterbehandling",
             "description": "Valgfrit: En dedikeret genvej, der altid anvender AI-efterbehandling på din transskription."
+          },
+          "correct_selection": {
+            "name": "Correction Shortcut",
+            "description": "The keyboard shortcut to correct the selected text. Pressing it again switches to the next tone."
           }
         },
         "errors": {
@@ -897,6 +902,79 @@
           "description": "Højtydende tensor-bibliotek til maskinlæringsinferens på enheden",
           "details": "Handys lokale tale-til-tekst funktionalitet er bygget på transcribe.cpp og ggml. Tak for det fantastiske arbejde af Georgi Gerganov og bidragyderne."
         }
+      }
+    },
+    "correction": {
+      "loadFailed": "Could not load the text correction settings",
+      "saveFailed": "Could not save the text correction settings",
+      "hotkey": {
+        "title": "Shortcut"
+      },
+      "provider": {
+        "title": "Model",
+        "label": "Provider",
+        "description": "Where the correction runs: a model on this computer, or a cloud provider.",
+        "local": "Local (on this computer)"
+      },
+      "local": {
+        "listFailed": "Could not list the local models",
+        "pickFailed": "Could not open the folder picker",
+        "sizeGb": "{{size}} GB",
+        "folder": {
+          "title": "Models folder",
+          "description": "The folder with your GGUF models. Models are found up to three folders deep.",
+          "placeholder": "Path to the models folder",
+          "choose": "Choose folder"
+        },
+        "model": {
+          "title": "Model",
+          "description": "The local model used to correct your text.",
+          "placeholder": "Choose a model",
+          "empty": "No models found in this folder."
+        },
+        "unload": {
+          "title": "Unload model",
+          "description": "Frees the memory used by the correction model after it hasn't been used for this long."
+        }
+      },
+      "cloud": {
+        "model": {
+          "title": "Model",
+          "description": "The model name, as the provider calls it.",
+          "placeholder": "Model name"
+        },
+        "apiKey": {
+          "title": "API key",
+          "description": "Shared with Post Process: a key saved there is used here too.",
+          "placeholder": "API key"
+        }
+      },
+      "fallback": {
+        "title": "Backup provider",
+        "label": "Backup provider",
+        "description": "Optional. Used when the local model cannot be loaded.",
+        "none": "None"
+      },
+      "styleRules": {
+        "title": "My style rules",
+        "label": "Rules",
+        "description": "How your texts should sound. These rules are sent with every correction."
+      },
+      "tones": {
+        "title": "Tones",
+        "description": "Each tone is a goal for the correction. The first one is the default when you use the shortcut. You can have up to {{max}} tones.",
+        "name": "Tone name",
+        "namePlaceholder": "Name",
+        "goal": "Tone goal",
+        "goalPlaceholder": "What the correction should do",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "delete": "Delete tone",
+        "keepOne": "At least one tone is required",
+        "add": "Add tone",
+        "maxReached": "Limit of {{max}} tones reached",
+        "newName": "New tone",
+        "newGoal": "Correct the text and adjust its tone as described here."
       }
     }
   },

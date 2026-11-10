@@ -17,6 +17,7 @@
     "models": "Modelos",
     "advanced": "Avançado",
     "postProcessing": "Pós-Processamento",
+    "correction": "Correção de texto",
     "history": "Histórico",
     "debug": "Depuração",
     "about": "Sobre"
@@ -348,6 +349,10 @@
           "transcribe_with_post_process": {
             "name": "Tecla de Pós-Processamento",
             "description": "Opcional: Uma tecla de atalho dedicada que sempre aplica pós-processamento com IA à sua transcrição."
+          },
+          "correct_selection": {
+            "name": "Atalho de Correção",
+            "description": "O atalho para corrigir o texto selecionado. Apertar de novo troca para o próximo tom."
           }
         },
         "errors": {
@@ -897,6 +902,79 @@
           "description": "Inferência de alto desempenho do modelo de reconhecimento automático de fala Whisper da OpenAI",
           "details": "O Handy usa ggml para processamento rápido e local de fala para texto. Agradecemos ao incrível trabalho de Georgi Gerganov e colaboradores."
         }
+      }
+    },
+    "correction": {
+      "loadFailed": "Não foi possível carregar as configurações de correção de texto",
+      "saveFailed": "Não foi possível salvar as configurações de correção de texto",
+      "hotkey": {
+        "title": "Atalho"
+      },
+      "provider": {
+        "title": "Modelo",
+        "label": "Provedor",
+        "description": "Onde a correção roda: um modelo neste computador ou um provedor na nuvem.",
+        "local": "Local (neste computador)"
+      },
+      "local": {
+        "listFailed": "Não foi possível listar os modelos locais",
+        "pickFailed": "Não foi possível abrir o seletor de pasta",
+        "sizeGb": "{{size}} GB",
+        "folder": {
+          "title": "Pasta de modelos",
+          "description": "A pasta com os seus modelos GGUF. Os modelos são encontrados até três pastas abaixo dela.",
+          "placeholder": "Caminho da pasta de modelos",
+          "choose": "Escolher pasta"
+        },
+        "model": {
+          "title": "Modelo",
+          "description": "O modelo local usado para corrigir o seu texto.",
+          "placeholder": "Escolha um modelo",
+          "empty": "Nenhum modelo encontrado nesta pasta."
+        },
+        "unload": {
+          "title": "Descarregar modelo",
+          "description": "Libera a memória usada pelo modelo de correção depois desse tempo sem uso."
+        }
+      },
+      "cloud": {
+        "model": {
+          "title": "Modelo",
+          "description": "O nome do modelo, do jeito que o provedor chama.",
+          "placeholder": "Nome do modelo"
+        },
+        "apiKey": {
+          "title": "Chave de API",
+          "description": "Compartilhada com o Pós-Processamento: uma chave salva lá também vale aqui.",
+          "placeholder": "Chave de API"
+        }
+      },
+      "fallback": {
+        "title": "Provedor reserva",
+        "label": "Provedor reserva",
+        "description": "Opcional. Usado quando o modelo local não consegue ser carregado.",
+        "none": "Nenhum"
+      },
+      "styleRules": {
+        "title": "Regras do meu estilo",
+        "label": "Regras",
+        "description": "Como os seus textos devem soar. Essas regras vão junto em toda correção."
+      },
+      "tones": {
+        "title": "Tons",
+        "description": "Cada tom é um objetivo para a correção. O primeiro é o padrão quando você usa o atalho. Você pode ter até {{max}} tons.",
+        "name": "Nome do tom",
+        "namePlaceholder": "Nome",
+        "goal": "Objetivo do tom",
+        "goalPlaceholder": "O que a correção deve fazer",
+        "moveUp": "Subir",
+        "moveDown": "Descer",
+        "delete": "Apagar tom",
+        "keepOne": "É preciso manter pelo menos um tom",
+        "add": "Adicionar tom",
+        "maxReached": "Limite de {{max}} tons atingido",
+        "newName": "Novo tom",
+        "newGoal": "Corrija o texto e ajuste o tom como descrito aqui."
       }
     }
   },

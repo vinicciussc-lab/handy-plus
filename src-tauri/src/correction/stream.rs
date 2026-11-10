@@ -671,7 +671,7 @@ mod tests {
         use crate::correction::local_engine::LocalEngine;
         use crate::correction::settings::DEFAULT_STYLE_RULES;
         use crate::correction::text::{
-            build_messages, clean_output, detect_lang, translate_goal, Lang,
+            build_messages, clean_output, detect_lang, goal_in, translate_goal, Lang,
         };
         use std::path::PathBuf;
 
@@ -736,6 +736,44 @@ mod tests {
                 ));
             }
         }
+
+        // A style on an English original stays in English.
+        let formal = crate::correction::settings::default_tones()
+            .into_iter()
+            .find(|t| t.id == "mais_formal")
+            .expect("Formal is a default style");
+        let casual_en = "hey so i cant make it to the meeting tmrw, something came up. can we do thursday instead?";
+        assert_eq!(detect_lang(casual_en), Lang::En);
+        let (system, user) = build_messages(
+            DEFAULT_STYLE_RULES,
+            &goal_in(&formal.goal, Lang::En),
+            casual_en,
+        );
+        let raw = match stream_chat(&target, &system, &user, |_| {}).await {
+            Ok(r) => r,
+            Err(e) => {
+                engine.unload();
+                panic!("stream_chat failed: {e}");
+            }
+        };
+        let out = clean_output(casual_en, &raw);
+        let line = format!(
+            "[Formal on English]
+{casual_en}
+=>
+{out}
+
+"
+        );
+        print!("{line}");
+        report.push_str(&line);
+        if detect_lang(&out) != Lang::En {
+            failures.push(format!("Formal on English left English: {out}"));
+        }
+        if raw.contains('—') || raw.contains('–') {
+            failures.push(format!("Formal on English has a dash: {raw}"));
+        }
+
         if let Ok(path) = std::env::var("HANDY_PLUS_TEST_REPORT") {
             std::fs::write(path, &report).unwrap();
         }

@@ -34,15 +34,28 @@ impl Lang {
     }
 }
 
-/// The language of the selected text: English, or Portuguese for anything
-/// else (the app is made for Portuguese).
+/// Confidence whatlang must give English (over Portuguese) when it does not
+/// call the guess reliable. Portuguese slang it takes for English ("vlw",
+/// "ok, valeu", "show, fechou") scores 0 to 0.06; a plain English sentence
+/// scores 0.8 or more. A short English text below it counts as Portuguese:
+/// the user can still flip the switch, while the other mistake would make the
+/// switch "translate" Portuguese into Portuguese.
+const MIN_ENGLISH_CONFIDENCE: f64 = 0.5;
+
+/// The language of the selected text: English only when whatlang is sure of
+/// it, Portuguese for anything else (the app is made for Portuguese).
 pub fn detect_lang(text: &str) -> Lang {
     use whatlang::{Detector, Lang as W};
     // Only the two languages of the switch: short texts are guessed far
     // better between two than among seventy.
     let detector = Detector::with_allowlist(vec![W::Eng, W::Por]);
-    match detector.detect_lang(text) {
-        Some(W::Eng) => Lang::En,
+    match detector.detect(text) {
+        Some(info)
+            if info.lang() == W::Eng
+                && (info.is_reliable() || info.confidence() >= MIN_ENGLISH_CONFIDENCE) =>
+        {
+            Lang::En
+        }
         _ => Lang::Pt,
     }
 }
@@ -59,6 +72,18 @@ pub fn translate_goal(to: Lang) -> &'static str {
     match to {
         Lang::En => TRANSLATE_GOAL_TO_EN,
         Lang::Pt => TRANSLATE_GOAL_TO_PT,
+    }
+}
+
+/// Added to a style's or an adjustment's goal when the original is English:
+/// the rules ask for Portuguese, and the answer must stay in English.
+const SAME_LANGUAGE_EN: &str = "O texto está em inglês: responda no mesmo idioma do texto, inteiro em inglês (English). Esta é uma exceção às regras acima sobre o português.";
+
+/// The goal of a style or an adjustment for an original in `source`.
+pub fn goal_in(goal: &str, source: Lang) -> String {
+    match source {
+        Lang::Pt => goal.to_string(),
+        Lang::En => format!("{goal}\n{SAME_LANGUAGE_EN}"),
     }
 }
 
@@ -121,7 +146,6 @@ mod tests {
         for text in [
             "I think the game is worth it even with the bugs, but the price is too high for what it offers, so I would wait for a sale.",
             "hey, can we move tomorrow's meeting to thursday? something came up",
-            "thanks for the video you sent yesterday",
         ] {
             assert_eq!(detect_lang(text), Lang::En, "{text}");
         }
@@ -135,6 +159,53 @@ mod tests {
         );
         assert_eq!(detect_lang(""), Lang::Pt);
         assert_eq!(detect_lang("123"), Lang::Pt);
+    }
+
+    #[test]
+    fn short_slang_and_mixed_portuguese_stays_portuguese() {
+        for text in [
+            "oi mano blz",
+            "vlw",
+            "blz entao",
+            "ok, valeu",
+            "o deploy falhou no build",
+            "ok",
+            "kkkk",
+            "bora?",
+            "show, fechou",
+            "manda o link do meet",
+        ] {
+            assert_eq!(detect_lang(text), Lang::Pt, "{text}");
+        }
+    }
+
+    #[test]
+    fn short_english_is_english_when_whatlang_is_sure() {
+        for text in [
+            "the build failed again",
+            "can you send me the file when you get a chance?",
+        ] {
+            assert_eq!(detect_lang(text), Lang::En, "{text}");
+        }
+        // Accepted: whatlang is not sure of these (or calls them Portuguese),
+        // so they open as PT. The user flips the switch by hand; leaning
+        // Portuguese keeps slang like "vlw" from opening as EN.
+        for text in [
+            "see you tomorrow",
+            "ok thanks",
+            "thanks for the video you sent yesterday",
+        ] {
+            assert_eq!(detect_lang(text), Lang::Pt, "{text}");
+        }
+    }
+
+    #[test]
+    fn an_english_style_answers_in_english() {
+        assert_eq!(goal_in("Reescreva.", Lang::Pt), "Reescreva.");
+        let en = goal_in("Reescreva.", Lang::En);
+        assert!(en.starts_with("Reescreva.\n"));
+        assert!(en.contains("inglês"));
+        assert!(!en.contains('—') && !en.contains('–'));
     }
 
     #[test]

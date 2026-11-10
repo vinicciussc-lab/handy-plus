@@ -23,8 +23,8 @@ use super::settings::{
 };
 use super::stream::{stream_chat, ChatTarget};
 use super::text::{
-    build_messages, clean_output, detect_lang, generation_progress, load_progress, translate_goal,
-    Lang,
+    build_messages, clean_output, detect_lang, generation_progress, goal_in, load_progress,
+    translate_goal, Lang,
 };
 use super::{gpu_guard, text::MAX_CORRECTION_CHARS};
 use crate::actions::ShortcutAction;
@@ -1491,7 +1491,7 @@ impl Session {
         let mut choices = Choices::new(source);
         mark_choice(&mut self.panel, &choices);
         // The goal of a run in the original's language: its adjustment's,
-        // else its style's.
+        // else its style's (told to stay in English for an English original).
         let goal_of = |key: ResultKey| -> String {
             match (key.adjust, key.style) {
                 (Some(a), _) => adjusts.get(a),
@@ -1525,7 +1525,7 @@ impl Session {
                     .to_string();
                 let goal = match choices.translation_to(run.key) {
                     Some(to) => translate_goal(to).to_string(),
-                    None => goal_of(run.key),
+                    None => goal_in(&goal_of(run.key), source),
                 };
                 let Some(text) = self
                     .generate(&target, &settings.style_rules, &goal, &base)

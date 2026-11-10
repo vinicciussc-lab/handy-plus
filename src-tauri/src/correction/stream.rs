@@ -526,10 +526,12 @@ mod tests {
             format: PostProcessApiFormat::OpenAi,
             local: true,
         };
-        let mut report = format!("ORIGINAL:
+        let mut report = format!(
+            "ORIGINAL:
 {TONES_SAMPLE}
 
-");
+"
+        );
         for tone in default_tones() {
             let (system, user) = build_messages(DEFAULT_STYLE_RULES, &tone.goal, TONES_SAMPLE);
             let raw = match stream_chat(&target, &system, &user, |_| {}).await {
@@ -540,10 +542,13 @@ mod tests {
                 }
             };
             let out = clean_output(TONES_SAMPLE, &raw);
-            report.push_str(&format!("[{}]
+            report.push_str(&format!(
+                "[{}]
 {out}
 
-", tone.name));
+",
+                tone.name
+            ));
             assert!(!out.contains('—') && !out.contains('–'));
         }
         print!("{report}");

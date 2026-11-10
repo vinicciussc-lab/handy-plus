@@ -1064,7 +1064,8 @@ pub static ACTION_MAP: Lazy<HashMap<String, Arc<dyn ShortcutAction>>> = Lazy::ne
         "test".to_string(),
         Arc::new(TestAction) as Arc<dyn ShortcutAction>,
     );
-    // Handy Plus: text correction (correct_selection and its temporary keys).
+    // Handy Plus: text correction (correct_selection, translate_selection and
+    // their temporary keys).
     crate::correction::session::register_actions(&mut map);
     map
 });

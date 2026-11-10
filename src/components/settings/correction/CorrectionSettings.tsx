@@ -76,6 +76,11 @@ export const CorrectionSettings: React.FC = () => {
           descriptionMode="tooltip"
           grouped={true}
         />
+        <ShortcutInput
+          shortcutId="translate_selection"
+          descriptionMode="tooltip"
+          grouped={true}
+        />
         <ToggleSwitch
           checked={settings.typing_hint ?? true}
           onChange={(typing_hint) => update({ typing_hint })}

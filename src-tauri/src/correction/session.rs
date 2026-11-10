@@ -1,17 +1,21 @@
-//! One text correction, from the `correct_selection` shortcut to the paste.
+//! One text correction, from the `correct_selection` (or
+//! `translate_selection`) shortcut to the paste.
 //!
 //! The decisions (which key does what in which phase, which keys to listen
 //! to) are pure functions at the top. The session itself runs as an async
-//! task that copies the selection, picks the model, streams the correction
-//! into the overlay panel via [`CorrectionUpdateEvent`] and waits for Enter,
-//! a digit or Esc, which arrive through temporary global shortcuts.
+//! task that copies the selection, opens the panel with the original text
+//! and the options (styles, then adjustments) while the model loads, streams
+//! each pick into the overlay panel via [`CorrectionUpdateEvent`] and waits
+//! for Enter, a digit or Esc, which arrive through temporary global shortcuts.
+//! A style processes the original; an adjustment works on the current result,
+//! so adjustments chain.
 
 use super::input_hooks::{self, binding_vk, click_outside, HookEvent};
 use super::local_engine::{EngineError, LocalEngine};
 use super::selection::{self, CaptureError};
 use super::settings::{
     default_tones, get_correction_settings, write_correction_settings, CloudModel,
-    CorrectionProvider, CorrectionSettings, CorrectionTone,
+    CorrectionProvider, CorrectionSettings, CorrectionTone, ToneKind,
 };
 use super::stream::{stream_chat, ChatTarget};
 use super::text::{build_messages, clean_output, generation_progress, load_progress};
@@ -26,7 +30,8 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -51,6 +56,9 @@ const CHOICE_TIMEOUT: Duration = Duration::from_secs(300);
 /// The first request after a load is very slow, so a tiny one goes first.
 const WARMUP_SYSTEM: &str = "Responda só OK.";
 const WARMUP_USER: &str = "oi";
+
+/// Id of the built-in translation adjustment.
+const TRANSLATE_ID: &str = "traduzir";
 
 const CANCEL_ID: &str = "correction_cancel";
 const APPLY_ID: &str = "correction_apply";
@@ -83,6 +91,9 @@ pub const TEMPORARY_BINDING_IDS: &[&str] = &[
 #[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum CorrectionPhase {
+    /// The panel shows the original text and the options, waiting for a pick.
+    /// Nothing is generated yet; the local model may be loading meanwhile.
+    Choosing,
     Loading,
     Generating,
     Preview,
@@ -147,8 +158,16 @@ pub struct CorrectionUpdateEvent {
     pub text: String,
     pub load_progress: Option<f32>,
     pub gen_progress: Option<f32>,
-    pub tones: Vec<String>,
-    pub tone_index: u32,
+    /// Names of the styles, then of the adjustments: one numbered list,
+    /// styles first (number = position + 1; only 1 to 9 have a key).
+    pub styles: Vec<String>,
+    pub adjusts: Vec<String>,
+    /// Index in `styles` of the style the current text came from.
+    pub current_style: Option<u32>,
+    /// Indexes in `adjusts` applied on top of it, in order.
+    pub applied_adjusts: Vec<u32>,
+    /// The local model is loading in the background while the user chooses.
+    pub preloading: bool,
     pub model_label: String,
     pub elapsed_ms: Option<u64>,
     pub error: Option<CorrectionErrorCode>,
@@ -168,8 +187,11 @@ impl CorrectionUpdateEvent {
             text: String::new(),
             load_progress: None,
             gen_progress: None,
-            tones: Vec::new(),
-            tone_index: 0,
+            styles: Vec::new(),
+            adjusts: Vec::new(),
+            current_style: None,
+            applied_adjusts: Vec::new(),
+            preloading: false,
             model_label: String::new(),
             elapsed_ms: None,
             error: None,
@@ -215,7 +237,12 @@ pub enum UiAction {
 pub enum SessionCommand {
     Cancel,
     Apply,
-    Regenerate(usize),
+    /// Process the original with this style (index in the styles); the
+    /// adjustments applied so far are dropped.
+    RunStyle(usize),
+    /// Apply this adjustment (index in the adjustments) to the current text,
+    /// or to the original when no style ran yet.
+    RunAdjust(usize),
     UseFallback(FallbackOption),
     NextView,
     SetView(CorrectionView),
@@ -226,28 +253,39 @@ pub enum SessionCommand {
     Ignore,
 }
 
-/// What a key means in a phase. Digits pick a tone in the preview (only the
-/// first nine tones have one) and an option in the fallback prompt.
+/// The option a 1-based number picks in the single list `styles ++ adjusts`.
+pub fn option_for_number(n: usize, styles: usize, adjusts: usize) -> Option<SessionCommand> {
+    let i = n.checked_sub(1)?;
+    if i < styles {
+        Some(SessionCommand::RunStyle(i))
+    } else if i < styles + adjusts {
+        Some(SessionCommand::RunAdjust(i - styles))
+    } else {
+        None
+    }
+}
+
+/// What a key means in a phase. In the choice and the preview a number picks
+/// a style or an adjustment (digits 1 to 9; a click reaches any option). In
+/// the fallback prompt it picks an option.
 pub fn decide(
     phase: &CorrectionPhase,
     input: SessionInput,
-    tones_len: usize,
+    styles: usize,
+    adjusts: usize,
     fallback: &[FallbackOption],
 ) -> SessionCommand {
     use CorrectionPhase as P;
-    // A tone click is the digit key.
-    let input = match input {
-        SessionInput::Ui(UiAction::Tone(n)) => SessionInput::Digit(n),
-        other => other,
-    };
+    let pick = |n: usize| option_for_number(n, styles, adjusts).unwrap_or(SessionCommand::Ignore);
     match (phase, input) {
         (
-            P::Loading | P::Generating | P::Preview | P::NeedsFallback,
+            P::Choosing | P::Loading | P::Generating | P::Preview | P::NeedsFallback,
             SessionInput::Escape
             | SessionInput::Shortcut
             | SessionInput::Dismiss
             | SessionInput::Ui(UiAction::Cancel),
         ) => SessionCommand::Cancel,
+        (P::Choosing, SessionInput::Enter) if styles > 0 => SessionCommand::RunStyle(0),
         (P::Preview, SessionInput::Enter | SessionInput::Ui(UiAction::Apply)) => {
             SessionCommand::Apply
         }
@@ -256,22 +294,57 @@ pub fn decide(
         }
         (P::Preview, SessionInput::Ui(UiAction::View(v))) => SessionCommand::SetView(v),
         (P::Preview, SessionInput::Tab) => SessionCommand::NextView,
-        (P::Generating | P::Preview, SessionInput::ScrollUp) => SessionCommand::Scroll(-1),
-        (P::Generating | P::Preview, SessionInput::ScrollDown) => SessionCommand::Scroll(1),
-        (P::Preview, SessionInput::Digit(d)) if d >= 1 && usize::from(d) <= tones_len.min(9) => {
-            SessionCommand::Regenerate(usize::from(d) - 1)
+        (P::Choosing | P::Generating | P::Preview, SessionInput::ScrollUp) => {
+            SessionCommand::Scroll(-1)
         }
+        (P::Choosing | P::Generating | P::Preview, SessionInput::ScrollDown) => {
+            SessionCommand::Scroll(1)
+        }
+        (P::Choosing | P::Preview, SessionInput::Digit(d)) if (1..=9).contains(&d) => {
+            pick(usize::from(d))
+        }
+        (P::Choosing | P::Preview, SessionInput::Ui(UiAction::Tone(n))) => pick(usize::from(n)),
         (P::NeedsFallback, SessionInput::Enter) => {
             fallback.first().map_or(SessionCommand::Ignore, |o| {
                 SessionCommand::UseFallback(o.clone())
             })
         }
-        (P::NeedsFallback, SessionInput::Digit(d)) if d >= 1 => fallback
-            .get(usize::from(d) - 1)
-            .map_or(SessionCommand::Ignore, |o| {
-                SessionCommand::UseFallback(o.clone())
-            }),
+        (P::NeedsFallback, SessionInput::Digit(d) | SessionInput::Ui(UiAction::Tone(d)))
+            if d >= 1 =>
+        {
+            fallback
+                .get(usize::from(d) - 1)
+                .map_or(SessionCommand::Ignore, |o| {
+                    SessionCommand::UseFallback(o.clone())
+                })
+        }
         _ => SessionCommand::Ignore,
+    }
+}
+
+/// The text a pick works on: a style always starts from the original; an
+/// adjustment works on the current result, or on the original before any.
+pub fn run_source<'a>(
+    cmd: &SessionCommand,
+    original: &'a str,
+    current: Option<&'a str>,
+) -> &'a str {
+    match cmd {
+        SessionCommand::RunAdjust(_) => current.unwrap_or(original),
+        _ => original,
+    }
+}
+
+/// Records a pick in the panel: a style replaces the chain, an adjustment
+/// joins it.
+fn mark_choice(panel: &mut CorrectionUpdateEvent, cmd: &SessionCommand) {
+    match cmd {
+        SessionCommand::RunStyle(i) => {
+            panel.current_style = Some(*i as u32);
+            panel.applied_adjusts.clear();
+        }
+        SessionCommand::RunAdjust(i) => panel.applied_adjusts.push(*i as u32),
+        _ => {}
     }
 }
 
@@ -309,7 +382,7 @@ pub fn wants_mouse_hook(phase: &CorrectionPhase) -> bool {
     use CorrectionPhase as P;
     matches!(
         phase,
-        P::Loading | P::Generating | P::Preview | P::NeedsFallback
+        P::Choosing | P::Loading | P::Generating | P::Preview | P::NeedsFallback
     )
 }
 
@@ -341,13 +414,19 @@ pub fn check_text(text: &str) -> Result<(), CorrectionErrorCode> {
     Ok(())
 }
 
-/// Temporary bindings a phase listens to: Esc (and the scroll keys while text
-/// streams); Esc, Enter, Tab, the scroll keys and one digit per tone in the
-/// preview; Esc, Enter and one digit per option in the fallback prompt;
-/// nothing otherwise.
+/// Temporary bindings a phase listens to: Esc, Enter, one digit per option
+/// and the scroll keys while choosing; Esc (and the scroll keys while text
+/// streams); Esc, Enter, Tab, the scroll keys, Ctrl+C and one digit per
+/// option in the preview; Esc, Enter and one digit per option in the
+/// fallback prompt; nothing otherwise.
 pub fn wanted_bindings(phase: &CorrectionPhase, choices: usize) -> Vec<String> {
     use CorrectionPhase as P;
     match phase {
+        P::Choosing => [CANCEL_ID.to_string(), APPLY_ID.to_string()]
+            .into_iter()
+            .chain((1..=choices.min(9)).map(|n| format!("{TONE_PREFIX}{n}")))
+            .chain([SCROLL_UP_ID.to_string(), SCROLL_DOWN_ID.to_string()])
+            .collect(),
         P::Loading => vec![CANCEL_ID.to_string()],
         P::Generating => vec![
             CANCEL_ID.to_string(),
@@ -467,6 +546,28 @@ fn session_tones(s: &CorrectionSettings) -> Vec<CorrectionTone> {
     }
 }
 
+/// The styles and the adjustments, each in its saved order.
+fn split_tones(tones: &[CorrectionTone]) -> (Vec<CorrectionTone>, Vec<CorrectionTone>) {
+    tones
+        .iter()
+        .cloned()
+        .partition(|t| t.kind == ToneKind::Style)
+}
+
+/// The translation the translate shortcut runs: the `traduzir` adjustment
+/// (and its index), or the built-in Traduzir goal if the user deleted it.
+fn translate_goal(adjusts: &[CorrectionTone]) -> (Option<usize>, String) {
+    if let Some(i) = adjusts.iter().position(|t| t.id == TRANSLATE_ID) {
+        return (Some(i), adjusts[i].goal.clone());
+    }
+    let goal = default_tones()
+        .into_iter()
+        .find(|t| t.id == TRANSLATE_ID)
+        .map(|t| t.goal)
+        .unwrap_or_default();
+    (None, goal)
+}
+
 /// Runs `work` until it finishes, calling `on_tick` every [`TICK`] meanwhile.
 /// Esc drops `work` (aborting a stream or a load) and returns `None`; the
 /// scroll keys call `on_scroll`; other keys are ignored.
@@ -493,7 +594,7 @@ async fn until_cancelled<F: Future>(
         match select(work.as_mut(), wake).await {
             Either::Left((out, _)) => return Some(out),
             Either::Right((Either::Left((Some(input), _)), _)) => {
-                match decide(phase, input, 0, &[]) {
+                match decide(phase, input, 0, 0, &[]) {
                     SessionCommand::Cancel => return None,
                     SessionCommand::Scroll(d) => on_scroll(d),
                     _ => {}
@@ -622,6 +723,18 @@ impl ShortcutAction for CorrectSelectionAction {
     }
 }
 
+/// `translate_selection`: starts a session that translates right away, when
+/// the shortcut is released.
+struct TranslateSelectionAction;
+
+impl ShortcutAction for TranslateSelectionAction {
+    fn start(&self, _app: &AppHandle, _binding_id: &str, _shortcut_str: &str) {}
+
+    fn stop(&self, app: &AppHandle, _binding_id: &str, _shortcut_str: &str) {
+        start_session(app, SessionMode::Translate);
+    }
+}
+
 /// Esc, Enter, Tab, the arrows and the digits while a session listens for them.
 struct CorrectionKeyAction;
 
@@ -640,6 +753,10 @@ pub fn register_actions(map: &mut HashMap<String, Arc<dyn ShortcutAction>>) {
     map.insert(
         "correct_selection".to_string(),
         Arc::new(CorrectSelectionAction),
+    );
+    map.insert(
+        "translate_selection".to_string(),
+        Arc::new(TranslateSelectionAction),
     );
     for id in TEMPORARY_BINDING_IDS {
         map.insert(id.to_string(), Arc::new(CorrectionKeyAction));
@@ -688,9 +805,14 @@ pub fn correction_hint_clicked(app: AppHandle) {
     begin(&app);
 }
 
-/// The correction shortcut: starts a correction, or closes the open one.
+/// The correction shortcut: opens the panel to choose, or closes the open one.
 /// Ignored while a dictation is recording or being processed.
 pub fn begin(app: &AppHandle) {
+    start_session(app, SessionMode::Correct);
+}
+
+/// Starts a session in `mode`, or closes the open one (either shortcut).
+fn start_session(app: &AppHandle, mode: SessionMode) {
     let Some(state) = app.try_state::<CorrectionSessionState>() else {
         return;
     };
@@ -718,7 +840,7 @@ pub fn begin(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // Run in its own task so a panic is caught here and cleanup still runs.
-        let work = tauri::async_runtime::spawn(run(app.clone(), rx));
+        let work = tauri::async_runtime::spawn(run(app.clone(), rx, mode));
         if let Err(e) = work.await {
             error!("Correction session failed: {e}");
         }
@@ -824,7 +946,78 @@ fn record_load_ms(app: &AppHandle, model: &str, ms: u64) {
     write_correction_settings(app, &s);
 }
 
-async fn run(app: AppHandle, inputs: UnboundedReceiver<SessionInput>) {
+/// A local model load, with its warm-up after a cold load. Built when the
+/// panel opens so it can run while the user chooses; dropping it cancels the
+/// load (the engine's load guard kills a half-loaded server).
+type LoadFuture = Pin<Box<dyn Future<Output = Result<ChatTarget, CorrectionErrorCode>> + Send>>;
+
+/// The model as the user picks: still loading, ready (or failed), or waiting
+/// for the user to choose a way out because the GPU has no room.
+enum Preload {
+    Running {
+        work: LoadFuture,
+        started: Instant,
+        /// A server has to start (the loading bar shows).
+        cold: bool,
+        expected_ms: Option<u64>,
+    },
+    Done(Result<ChatTarget, CorrectionErrorCode>),
+    NoRoom {
+        model: PathBuf,
+        key: String,
+        expected_ms: Option<u64>,
+    },
+}
+
+/// What opened the session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionMode {
+    /// The correction shortcut: the panel waits for a style or an adjustment.
+    Correct,
+    /// The translate shortcut: runs the translation right away.
+    Translate,
+}
+
+/// Opens the local server for `model` and warms it up after a cold load (the
+/// first request after a load is very slow), recording how long it all took.
+fn local_load(
+    app: AppHandle,
+    engine: Arc<LocalEngine>,
+    model: PathBuf,
+    gpu: bool,
+    key: String,
+    expected_ms: Option<u64>,
+    label: String,
+) -> LoadFuture {
+    Box::pin(async move {
+        let started = Instant::now();
+        let (base_url, load_ms) = engine
+            .ensure_loaded(&model, gpu, expected_ms, |_| {})
+            .await
+            .map_err(|e| {
+                warn!("Correction model failed to load: {e}");
+                engine_error_code(e)
+            })?;
+        let target = ChatTarget {
+            base_url,
+            api_key: String::new(),
+            model: label,
+            format: PostProcessApiFormat::OpenAi,
+            local: true,
+        };
+        if load_ms > 0 {
+            if let Err(e) = stream_chat(&target, WARMUP_SYSTEM, WARMUP_USER, |_| {}).await {
+                warn!("Correction warm-up failed: {e}");
+            }
+            let total = started.elapsed().as_millis() as u64;
+            debug!("Correction model ready in {total} ms (load {load_ms} ms)");
+            record_load_ms(&app, &key, total);
+        }
+        Ok(target)
+    })
+}
+
+async fn run(app: AppHandle, inputs: UnboundedReceiver<SessionInput>, mode: SessionMode) {
     let mut session = Session {
         panel: CorrectionUpdateEvent::hidden(),
         app,
@@ -832,7 +1025,7 @@ async fn run(app: AppHandle, inputs: UnboundedReceiver<SessionInput>) {
         started: Instant::now(),
         start_played: false,
     };
-    if let Err(code) = session.correct().await {
+    if let Err(code) = session.correct(mode).await {
         info!("Correction ended with {code:?}");
         set_bindings(&session.app, Vec::new()).await;
         session.panel.error = Some(code);
@@ -844,13 +1037,23 @@ struct Session {
     app: AppHandle,
     inputs: UnboundedReceiver<SessionInput>,
     panel: CorrectionUpdateEvent,
-    /// Start of the current attempt (the shortcut, or the last tone change).
+    /// Start of the current attempt (the last pick).
     started: Instant,
     /// The start sound already played in this session.
     start_played: bool,
 }
 
 type Step<T> = Result<Option<T>, CorrectionErrorCode>;
+
+fn goal_for(cmd: &SessionCommand, styles: &[CorrectionTone], adjusts: &[CorrectionTone]) -> String {
+    match cmd {
+        SessionCommand::RunStyle(i) => styles.get(*i),
+        SessionCommand::RunAdjust(i) => adjusts.get(*i),
+        _ => None,
+    }
+    .map(|t| t.goal.clone())
+    .unwrap_or_default()
+}
 
 impl Session {
     fn engine(&self) -> Arc<LocalEngine> {
@@ -895,6 +1098,36 @@ impl Session {
         tokio::time::sleep(how_long).await;
     }
 
+    /// Handles a key in the current phase: views and scrolling are done here;
+    /// a command the caller acts on is returned.
+    fn handle_input(
+        &mut self,
+        input: SessionInput,
+        fallback: &[FallbackOption],
+    ) -> Option<SessionCommand> {
+        let (styles, adjusts) = (self.panel.styles.len(), self.panel.adjusts.len());
+        match decide(&self.panel.phase, input, styles, adjusts, fallback) {
+            SessionCommand::Ignore => None,
+            SessionCommand::NextView => {
+                self.panel.view = self.panel.view.next();
+                emit(&self.app, &self.panel);
+                None
+            }
+            SessionCommand::SetView(v) => {
+                self.panel.view = v;
+                emit(&self.app, &self.panel);
+                None
+            }
+            SessionCommand::Scroll(d) => {
+                self.panel.scroll_nonce = self.panel.scroll_nonce.wrapping_add(1);
+                self.panel.scroll_dir = d;
+                emit(&self.app, &self.panel);
+                None
+            }
+            cmd => Some(cmd),
+        }
+    }
+
     /// Waits for a key that means something in the current phase.
     async fn next_command(&mut self, fallback: &[FallbackOption]) -> SessionCommand {
         loop {
@@ -906,28 +1139,65 @@ impl Session {
                     return SessionCommand::Cancel;
                 }
             };
-            let tones = self.panel.tones.len();
-            match decide(&self.panel.phase, input, tones, fallback) {
-                SessionCommand::Ignore => continue,
-                SessionCommand::NextView => {
-                    self.panel.view = self.panel.view.next();
-                    emit(&self.app, &self.panel);
-                }
-                SessionCommand::SetView(v) => {
-                    self.panel.view = v;
-                    emit(&self.app, &self.panel);
-                }
-                SessionCommand::Scroll(d) => {
-                    self.panel.scroll_nonce = self.panel.scroll_nonce.wrapping_add(1);
-                    self.panel.scroll_dir = d;
-                    emit(&self.app, &self.panel);
-                }
-                cmd => return cmd,
+            if let Some(cmd) = self.handle_input(input, fallback) {
+                return cmd;
             }
         }
     }
 
-    async fn correct(&mut self) -> Result<(), CorrectionErrorCode> {
+    /// Waits for the user's pick in the choice panel while the model keeps
+    /// loading; the loading bar moves meanwhile.
+    async fn wait_choice(&mut self, preload: &mut Preload) -> SessionCommand {
+        enum Woke {
+            Loaded(Result<ChatTarget, CorrectionErrorCode>),
+            Input(Option<SessionInput>),
+            Tick,
+        }
+        loop {
+            let Preload::Running {
+                work,
+                started,
+                cold,
+                expected_ms,
+            } = preload
+            else {
+                return self.next_command(&[]).await;
+            };
+            let (started, cold, expected_ms) = (*started, *cold, *expected_ms);
+            let woke = {
+                let recv = std::pin::pin!(self.inputs.recv());
+                let tick = std::pin::pin!(tokio::time::sleep(TICK));
+                match select(work.as_mut(), select(recv, tick)).await {
+                    Either::Left((loaded, _)) => Woke::Loaded(loaded),
+                    Either::Right((Either::Left((input, _)), _)) => Woke::Input(input),
+                    Either::Right((Either::Right(_), _)) => Woke::Tick,
+                }
+            };
+            match woke {
+                Woke::Loaded(loaded) => {
+                    self.panel.preloading = false;
+                    self.panel.load_progress = (cold && loaded.is_ok()).then_some(1.0);
+                    *preload = Preload::Done(loaded);
+                    emit(&self.app, &self.panel);
+                }
+                Woke::Tick => {
+                    if cold {
+                        let elapsed = started.elapsed().as_millis() as u64;
+                        self.panel.load_progress = load_progress(elapsed, expected_ms);
+                        emit(&self.app, &self.panel);
+                    }
+                }
+                Woke::Input(None) => return SessionCommand::Cancel,
+                Woke::Input(Some(input)) => {
+                    if let Some(cmd) = self.handle_input(input, &[]) {
+                        return cmd;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn correct(&mut self, mode: SessionMode) -> Result<(), CorrectionErrorCode> {
         let app = self.app.clone();
         let captured =
             tauri::async_runtime::spawn_blocking(move || selection::capture_selection(&app))
@@ -937,24 +1207,58 @@ impl Session {
         check_text(&captured.text)?;
 
         let settings = get_correction_settings(&self.app);
-        let tones = session_tones(&settings);
+        let (styles, adjusts) = split_tones(&session_tones(&settings));
+        let choices = styles.len() + adjusts.len();
         self.panel.original = captured.text;
-        self.panel.tones = tones.iter().map(|t| t.name.clone()).collect();
+        self.panel.styles = styles.iter().map(|t| t.name.clone()).collect();
+        self.panel.adjusts = adjusts.iter().map(|t| t.name.clone()).collect();
 
-        let Some(target) = self.choose_target(&settings).await? else {
+        let mut preload = self.prepare(&settings)?;
+        // The first run: what the user picks, or the translation. An unknown
+        // translation adjustment (deleted by the user) runs on the original
+        // without being marked in the list.
+        let (mut cmd, mut goal) = match mode {
+            SessionMode::Correct => {
+                self.enter(CorrectionPhase::Choosing, choices).await;
+                let cmd = self.wait_choice(&mut preload).await;
+                if !matches!(
+                    cmd,
+                    SessionCommand::RunStyle(_) | SessionCommand::RunAdjust(_)
+                ) {
+                    return Ok(());
+                }
+                let goal = goal_for(&cmd, &styles, &adjusts);
+                (cmd, goal)
+            }
+            SessionMode::Translate => {
+                let (index, goal) = translate_goal(&adjusts);
+                (
+                    index.map_or(SessionCommand::Ignore, SessionCommand::RunAdjust),
+                    goal,
+                )
+            }
+        };
+        self.started = Instant::now();
+        let Some(target) = self.resolve_target(preload, &settings).await? else {
             return Ok(());
         };
-        let mut tone = 0;
+
+        let mut current: Option<String> = None;
         loop {
-            self.panel.tone_index = tone as u32;
-            let goal = &tones[tone].goal;
-            let Some(text) = self.generate(&target, &settings.style_rules, goal).await? else {
+            let source = run_source(&cmd, &self.panel.original, current.as_deref()).to_string();
+            mark_choice(&mut self.panel, &cmd);
+            self.panel.view = CorrectionView::Corrected;
+            let Some(text) = self
+                .generate(&target, &settings.style_rules, &goal, &source)
+                .await?
+            else {
                 return Ok(());
             };
+            current = Some(text.clone());
             self.panel.text = text;
             self.panel.gen_progress = Some(1.0);
             self.panel.elapsed_ms = Some(self.started.elapsed().as_millis() as u64);
-            self.enter(CorrectionPhase::Preview, tones.len()).await;
+            self.enter(CorrectionPhase::Preview, choices).await;
             match self.next_command(&[]).await {
                 SessionCommand::Apply => {
                     let text = self.panel.text.clone();
@@ -964,9 +1268,9 @@ impl Session {
                     let text = self.panel.text.clone();
                     return self.copy(text).await;
                 }
-                SessionCommand::Regenerate(i) => {
-                    tone = i;
-                    self.panel.view = CorrectionView::Corrected;
+                next @ (SessionCommand::RunStyle(_) | SessionCommand::RunAdjust(_)) => {
+                    goal = goal_for(&next, &styles, &adjusts);
+                    cmd = next;
                     self.started = Instant::now();
                 }
                 _ => return Ok(()),
@@ -974,12 +1278,13 @@ impl Session {
         }
     }
 
-    /// Where the request goes. `None` when the user cancelled.
-    async fn choose_target(&mut self, s: &CorrectionSettings) -> Step<ChatTarget> {
+    /// Decides where the requests go when the panel opens, and starts loading
+    /// the local model if the GPU has room for it.
+    fn prepare(&mut self, s: &CorrectionSettings) -> Result<Preload, CorrectionErrorCode> {
         let path = match &s.provider {
             CorrectionProvider::Cloud(m) => {
                 self.panel.model_label = m.model.clone();
-                return cloud_target(&self.app, m).map(Some);
+                return cloud_target(&self.app, m).map(|t| Preload::Done(Ok(t)));
             }
             CorrectionProvider::Local => s
                 .local_model_path
@@ -997,106 +1302,148 @@ impl Session {
             .file_stem()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-
-        let mut gpu = true;
-        if !self.engine().serves(&model, true)
-            && !gpu_guard::has_room(gpu_guard::free_vram_bytes(), size)
-        {
-            let options = fallback_options(s.fallback.is_some());
-            self.panel.fallback_options = options.clone();
-            self.enter(CorrectionPhase::NeedsFallback, options.len())
-                .await;
-            match self.next_command(&options).await {
-                SessionCommand::UseFallback(FallbackOption::Cloud) => {
-                    let m = s.fallback.as_ref().expect("offered only when set");
-                    self.panel.model_label = m.model.clone();
-                    return cloud_target(&self.app, m).map(Some);
-                }
-                SessionCommand::UseFallback(FallbackOption::Cpu) => gpu = false,
-                _ => return Ok(None),
-            }
+        let expected_ms = s.last_load_ms.get(&path).copied();
+        let engine = self.engine();
+        let served = engine.serves(&model, true);
+        if !served && !gpu_guard::has_room(gpu_guard::free_vram_bytes(), size) {
+            return Ok(Preload::NoRoom {
+                model,
+                key: path,
+                expected_ms,
+            });
         }
-        let expected = s.last_load_ms.get(&path).copied();
-        self.load_local(&model, gpu, &path, expected).await
+        let cold = !served;
+        if cold {
+            self.panel.preloading = true;
+            self.panel.load_progress = load_progress(0, expected_ms);
+        }
+        let work = local_load(
+            self.app.clone(),
+            engine,
+            model,
+            true,
+            path,
+            expected_ms,
+            self.panel.model_label.clone(),
+        );
+        Ok(Preload::Running {
+            work,
+            started: Instant::now(),
+            cold,
+            expected_ms,
+        })
     }
 
-    /// Opens the local server (skipping the loading bar when it is already up)
-    /// and warms it up after a cold load.
-    async fn load_local(
+    /// The target once the user picked: the finished preload, the rest of a
+    /// load still running (with the loading bar), or the GPU fallback prompt.
+    /// `None` when the user cancelled.
+    async fn resolve_target(
         &mut self,
-        model: &Path,
-        gpu: bool,
-        key: &str,
+        preload: Preload,
+        s: &CorrectionSettings,
+    ) -> Step<ChatTarget> {
+        self.panel.preloading = false;
+        match preload {
+            Preload::Done(done) => done.map(Some),
+            Preload::Running {
+                work,
+                started,
+                cold,
+                expected_ms,
+            } => self.finish_load(work, started, cold, expected_ms).await,
+            Preload::NoRoom {
+                model,
+                key,
+                expected_ms,
+            } => {
+                let options = fallback_options(s.fallback.is_some());
+                self.panel.fallback_options = options.clone();
+                self.enter(CorrectionPhase::NeedsFallback, options.len())
+                    .await;
+                match self.next_command(&options).await {
+                    SessionCommand::UseFallback(FallbackOption::Cloud) => {
+                        let m = s.fallback.as_ref().expect("offered only when set");
+                        self.panel.model_label = m.model.clone();
+                        cloud_target(&self.app, m).map(Some)
+                    }
+                    SessionCommand::UseFallback(FallbackOption::Cpu) => {
+                        let engine = self.engine();
+                        let cold = !engine.serves(&model, false);
+                        let work = local_load(
+                            self.app.clone(),
+                            engine,
+                            model,
+                            false,
+                            key,
+                            expected_ms,
+                            self.panel.model_label.clone(),
+                        );
+                        self.finish_load(work, Instant::now(), cold, expected_ms)
+                            .await
+                    }
+                    _ => Ok(None),
+                }
+            }
+        }
+    }
+
+    /// Waits for a load to finish, showing the loading bar when a server has
+    /// to start. Esc drops the load.
+    async fn finish_load(
+        &mut self,
+        work: LoadFuture,
+        started: Instant,
+        cold: bool,
         expected_ms: Option<u64>,
     ) -> Step<ChatTarget> {
-        let engine = self.engine();
-        let cold = !engine.serves(model, gpu);
+        let elapsed = || started.elapsed().as_millis() as u64;
         if cold {
-            self.panel.load_progress = load_progress(0, expected_ms);
+            self.panel.load_progress = load_progress(elapsed(), expected_ms);
             self.enter(CorrectionPhase::Loading, 0).await;
         }
-        let load_started = Instant::now();
         let mut panel = self.panel.clone();
         let app = self.app.clone();
-        let mut tick = move || {
+        let tick = move || {
             if cold {
-                let elapsed = load_started.elapsed().as_millis() as u64;
-                panel.load_progress = load_progress(elapsed, expected_ms);
+                panel.load_progress = load_progress(elapsed(), expected_ms);
                 emit(&app, &panel);
             }
         };
         let phase = CorrectionPhase::Loading;
-        let loading = engine.ensure_loaded(model, gpu, expected_ms, |_| {});
-        let Some(loaded) =
-            until_cancelled(loading, &mut self.inputs, &phase, &mut tick, |_| {}).await
+        let Some(loaded) = until_cancelled(work, &mut self.inputs, &phase, tick, |_| {}).await
         else {
             return Ok(None);
         };
-        let (base_url, load_ms) = loaded.map_err(|e| {
-            warn!("Correction model failed to load: {e}");
-            engine_error_code(e)
-        })?;
-        let target = ChatTarget {
-            base_url,
-            api_key: String::new(),
-            model: self.panel.model_label.clone(),
-            format: PostProcessApiFormat::OpenAi,
-            local: true,
-        };
-        if load_ms > 0 {
-            // Cold load: the first request is slow, so pay for it here.
-            let warmup = stream_chat(&target, WARMUP_SYSTEM, WARMUP_USER, |_| {});
-            match until_cancelled(warmup, &mut self.inputs, &phase, &mut tick, |_| {}).await {
-                None => return Ok(None),
-                Some(Err(e)) => warn!("Correction warm-up failed: {e}"),
-                Some(Ok(_)) => {}
-            }
-            let total = load_started.elapsed().as_millis() as u64;
-            debug!("Correction model ready in {total} ms (load {load_ms} ms)");
-            record_load_ms(&self.app, key, total);
-        }
+        let target = loaded?;
         self.panel.load_progress = cold.then_some(1.0);
         Ok(Some(target))
     }
 
-    /// Streams one correction of the original text into the panel. `None`
-    /// when the user pressed Esc.
-    async fn generate(&mut self, target: &ChatTarget, rules: &str, goal: &str) -> Step<String> {
+    /// Streams one run over `source` (the original for a style, the current
+    /// result for an adjustment) into the panel. `None` when the user
+    /// pressed Esc.
+    async fn generate(
+        &mut self,
+        target: &ChatTarget,
+        rules: &str,
+        goal: &str,
+        source: &str,
+    ) -> Step<String> {
         self.panel.text.clear();
         self.panel.gen_progress = Some(0.0);
         self.panel.elapsed_ms = None;
         self.enter(CorrectionPhase::Generating, 0).await;
 
-        let original = self.panel.original.clone();
-        let (system, user) = build_messages(rules, goal, &original);
-        let input_chars = original.chars().count();
+        let source = source.to_string();
+        let (system, user) = build_messages(rules, goal, &source);
+        let input_chars = source.chars().count();
         // Shared with the scroll handler so a scroll event carries the text so far.
         let shared = Arc::new(Mutex::new(self.panel.clone()));
         let app = self.app.clone();
         let mut raw = String::new();
         let mut last_emit: Option<Instant> = None;
         let on_delta = {
-            let (shared, app) = (shared.clone(), app.clone());
+            let (shared, app, source) = (shared.clone(), app.clone(), source.clone());
             move |delta: &str| {
                 raw.push_str(delta);
                 if last_emit.is_some_and(|t| t.elapsed() < EMIT_INTERVAL) {
@@ -1104,7 +1451,7 @@ impl Session {
                 }
                 last_emit = Some(Instant::now());
                 let mut panel = lock(&shared);
-                panel.text = clean_output(&original, &raw);
+                panel.text = clean_output(&source, &raw);
                 panel.gen_progress = Some(generation_progress(raw.chars().count(), input_chars));
                 emit(&app, &panel);
             }
@@ -1138,7 +1485,7 @@ impl Session {
             warn!("Correction request failed: {e}");
             failed.clone()
         })?;
-        let text = clean_output(&self.panel.original, &raw);
+        let text = clean_output(&source, &raw);
         if text.is_empty() {
             warn!("Correction reply was empty after cleanup");
             return Err(failed);
@@ -1229,7 +1576,7 @@ mod tests {
             CorrectionPhase::Preview,
         ] {
             assert_eq!(
-                decide(&p, SessionInput::Escape, 4, &[]),
+                decide(&p, SessionInput::Escape, 4, 0, &[]),
                 SessionCommand::Cancel
             );
         }
@@ -1239,15 +1586,15 @@ mod tests {
     fn preview_enter_applies_and_digits_pick_tones() {
         let p = CorrectionPhase::Preview;
         assert_eq!(
-            decide(&p, SessionInput::Enter, 4, &[]),
+            decide(&p, SessionInput::Enter, 4, 0, &[]),
             SessionCommand::Apply
         );
         assert_eq!(
-            decide(&p, SessionInput::Digit(2), 4, &[]),
-            SessionCommand::Regenerate(1)
+            decide(&p, SessionInput::Digit(2), 4, 0, &[]),
+            SessionCommand::RunStyle(1)
         );
         assert_eq!(
-            decide(&p, SessionInput::Digit(5), 4, &[]),
+            decide(&p, SessionInput::Digit(5), 4, 0, &[]),
             SessionCommand::Ignore
         );
     }
@@ -1257,19 +1604,19 @@ mod tests {
         let opts = [FallbackOption::Cloud, FallbackOption::Cpu];
         let p = CorrectionPhase::NeedsFallback;
         assert_eq!(
-            decide(&p, SessionInput::Digit(2), 4, &opts),
+            decide(&p, SessionInput::Digit(2), 4, 0, &opts),
             SessionCommand::UseFallback(FallbackOption::Cpu)
         );
         assert_eq!(
-            decide(&p, SessionInput::Enter, 4, &opts),
+            decide(&p, SessionInput::Enter, 4, 0, &opts),
             SessionCommand::UseFallback(FallbackOption::Cloud)
         );
         assert_eq!(
-            decide(&p, SessionInput::Escape, 4, &opts),
+            decide(&p, SessionInput::Escape, 4, 0, &opts),
             SessionCommand::Cancel
         );
         assert_eq!(
-            decide(&p, SessionInput::Digit(3), 4, &opts),
+            decide(&p, SessionInput::Digit(3), 4, 0, &opts),
             SessionCommand::Ignore
         );
     }
@@ -1288,7 +1635,7 @@ mod tests {
                 SessionInput::Digit(1),
             ] {
                 assert_eq!(
-                    decide(&p, input, 4, &[FallbackOption::Cpu]),
+                    decide(&p, input, 4, 0, &[FallbackOption::Cpu]),
                     SessionCommand::Ignore
                 );
             }
@@ -1299,11 +1646,11 @@ mod tests {
     fn working_phases_ignore_enter_and_digits() {
         for p in [CorrectionPhase::Loading, CorrectionPhase::Generating] {
             assert_eq!(
-                decide(&p, SessionInput::Enter, 4, &[]),
+                decide(&p, SessionInput::Enter, 4, 0, &[]),
                 SessionCommand::Ignore
             );
             assert_eq!(
-                decide(&p, SessionInput::Digit(1), 4, &[]),
+                decide(&p, SessionInput::Digit(1), 4, 0, &[]),
                 SessionCommand::Ignore
             );
         }
@@ -1313,12 +1660,12 @@ mod tests {
     fn digit_zero_and_tones_past_nine_are_ignored() {
         let p = CorrectionPhase::Preview;
         assert_eq!(
-            decide(&p, SessionInput::Digit(0), 12, &[]),
+            decide(&p, SessionInput::Digit(0), 12, 0, &[]),
             SessionCommand::Ignore
         );
         assert_eq!(
-            decide(&p, SessionInput::Digit(9), 12, &[]),
-            SessionCommand::Regenerate(8)
+            decide(&p, SessionInput::Digit(9), 12, 0, &[]),
+            SessionCommand::RunStyle(8)
         );
     }
 
@@ -1326,23 +1673,23 @@ mod tests {
     fn ui_actions_map_to_commands_in_preview() {
         let p = CorrectionPhase::Preview;
         assert_eq!(
-            decide(&p, SessionInput::Ui(UiAction::Apply), 6, &[]),
+            decide(&p, SessionInput::Ui(UiAction::Apply), 6, 0, &[]),
             SessionCommand::Apply
         );
         assert_eq!(
-            decide(&p, SessionInput::Ui(UiAction::Copy), 6, &[]),
+            decide(&p, SessionInput::Ui(UiAction::Copy), 6, 0, &[]),
             SessionCommand::Copy
         );
         assert_eq!(
-            decide(&p, SessionInput::CopyKey, 6, &[]),
+            decide(&p, SessionInput::CopyKey, 6, 0, &[]),
             SessionCommand::Copy
         );
         assert_eq!(
-            decide(&p, SessionInput::Ui(UiAction::Tone(3)), 6, &[]),
-            SessionCommand::Regenerate(2)
+            decide(&p, SessionInput::Ui(UiAction::Tone(3)), 6, 0, &[]),
+            SessionCommand::RunStyle(2)
         );
         assert_eq!(
-            decide(&p, SessionInput::Ui(UiAction::Tone(9)), 6, &[]),
+            decide(&p, SessionInput::Ui(UiAction::Tone(9)), 6, 0, &[]),
             SessionCommand::Ignore
         );
         assert_eq!(
@@ -1350,6 +1697,7 @@ mod tests {
                 &p,
                 SessionInput::Ui(UiAction::View(CorrectionView::Original)),
                 6,
+                0,
                 &[]
             ),
             SessionCommand::SetView(CorrectionView::Original)
@@ -1371,7 +1719,7 @@ mod tests {
                 SessionInput::Ui(UiAction::View(CorrectionView::Changes)),
             ] {
                 assert_eq!(
-                    decide(&p, i, 6, &[FallbackOption::Cpu]),
+                    decide(&p, i, 6, 0, &[FallbackOption::Cpu]),
                     SessionCommand::Ignore
                 );
             }
@@ -1383,11 +1731,11 @@ mod tests {
         let opts = [FallbackOption::Cloud, FallbackOption::Cpu];
         let p = CorrectionPhase::NeedsFallback;
         assert_eq!(
-            decide(&p, SessionInput::Ui(UiAction::Tone(2)), 2, &opts),
+            decide(&p, SessionInput::Ui(UiAction::Tone(2)), 2, 0, &opts),
             SessionCommand::UseFallback(FallbackOption::Cpu)
         );
         assert_eq!(
-            decide(&p, SessionInput::Ui(UiAction::Tone(3)), 2, &opts),
+            decide(&p, SessionInput::Ui(UiAction::Tone(3)), 2, 0, &opts),
             SessionCommand::Ignore
         );
     }
@@ -1401,7 +1749,7 @@ mod tests {
             CorrectionPhase::NeedsFallback,
         ] {
             assert_eq!(
-                decide(&p, SessionInput::Shortcut, 6, &[FallbackOption::Cpu]),
+                decide(&p, SessionInput::Shortcut, 6, 0, &[FallbackOption::Cpu]),
                 SessionCommand::Cancel
             );
             assert_eq!(
@@ -1409,6 +1757,7 @@ mod tests {
                     &p,
                     SessionInput::Ui(UiAction::Cancel),
                     6,
+                    0,
                     &[FallbackOption::Cpu]
                 ),
                 SessionCommand::Cancel
@@ -1554,7 +1903,7 @@ mod tests {
     #[test]
     fn tab_switches_view_only_in_preview() {
         assert_eq!(
-            decide(&CorrectionPhase::Preview, SessionInput::Tab, 4, &[]),
+            decide(&CorrectionPhase::Preview, SessionInput::Tab, 4, 0, &[]),
             SessionCommand::NextView
         );
         for p in [
@@ -1564,7 +1913,7 @@ mod tests {
             CorrectionPhase::Applied,
         ] {
             assert_eq!(
-                decide(&p, SessionInput::Tab, 4, &[]),
+                decide(&p, SessionInput::Tab, 4, 0, &[]),
                 SessionCommand::Ignore
             );
         }
@@ -1574,11 +1923,11 @@ mod tests {
     fn arrows_scroll_while_generating_or_previewing() {
         for p in [CorrectionPhase::Generating, CorrectionPhase::Preview] {
             assert_eq!(
-                decide(&p, SessionInput::ScrollDown, 4, &[]),
+                decide(&p, SessionInput::ScrollDown, 4, 0, &[]),
                 SessionCommand::Scroll(1)
             );
             assert_eq!(
-                decide(&p, SessionInput::ScrollUp, 4, &[]),
+                decide(&p, SessionInput::ScrollUp, 4, 0, &[]),
                 SessionCommand::Scroll(-1)
             );
         }
@@ -1588,7 +1937,7 @@ mod tests {
             CorrectionPhase::Error,
         ] {
             assert_eq!(
-                decide(&p, SessionInput::ScrollDown, 4, &[]),
+                decide(&p, SessionInput::ScrollDown, 4, 0, &[]),
                 SessionCommand::Ignore
             );
         }
@@ -1814,7 +2163,7 @@ mod tests {
             CorrectionPhase::NeedsFallback,
         ] {
             assert_eq!(
-                decide(&p, SessionInput::Dismiss, 6, &[FallbackOption::Cpu]),
+                decide(&p, SessionInput::Dismiss, 6, 0, &[FallbackOption::Cpu]),
                 SessionCommand::Cancel
             );
         }
@@ -1825,7 +2174,7 @@ mod tests {
             CorrectionPhase::Hidden,
         ] {
             assert_eq!(
-                decide(&p, SessionInput::Dismiss, 6, &[]),
+                decide(&p, SessionInput::Dismiss, 6, 0, &[]),
                 SessionCommand::Ignore
             );
         }
@@ -1895,5 +2244,268 @@ mod tests {
         ] {
             assert!(!wants_mouse_hook(&p), "{p:?}");
         }
+    }
+
+    #[test]
+    fn choosing_numbers_pick_a_style_or_an_adjustment() {
+        let p = CorrectionPhase::Choosing;
+        let cases = [
+            (1, SessionCommand::RunStyle(0)),
+            (4, SessionCommand::RunStyle(3)),
+            (5, SessionCommand::RunAdjust(0)),
+            (8, SessionCommand::RunAdjust(3)),
+            (9, SessionCommand::Ignore),
+            (0, SessionCommand::Ignore),
+        ];
+        for (d, want) in cases {
+            assert_eq!(decide(&p, SessionInput::Digit(d), 4, 4, &[]), want, "{d}");
+        }
+        assert_eq!(
+            decide(&p, SessionInput::Ui(UiAction::Tone(6)), 4, 4, &[]),
+            SessionCommand::RunAdjust(1)
+        );
+    }
+
+    #[test]
+    fn choosing_enter_runs_the_first_style() {
+        let p = CorrectionPhase::Choosing;
+        assert_eq!(
+            decide(&p, SessionInput::Enter, 4, 4, &[]),
+            SessionCommand::RunStyle(0)
+        );
+        // No style to run: Enter does nothing.
+        assert_eq!(
+            decide(&p, SessionInput::Enter, 0, 4, &[]),
+            SessionCommand::Ignore
+        );
+    }
+
+    #[test]
+    fn choosing_closes_on_escape_shortcut_click_outside_or_cancel() {
+        let p = CorrectionPhase::Choosing;
+        for i in [
+            SessionInput::Escape,
+            SessionInput::Shortcut,
+            SessionInput::Dismiss,
+            SessionInput::Ui(UiAction::Cancel),
+        ] {
+            assert_eq!(decide(&p, i, 4, 4, &[]), SessionCommand::Cancel, "{i:?}");
+        }
+    }
+
+    #[test]
+    fn choosing_has_nothing_to_apply_copy_or_switch_view() {
+        let p = CorrectionPhase::Choosing;
+        for i in [
+            SessionInput::Ui(UiAction::Apply),
+            SessionInput::Ui(UiAction::Copy),
+            SessionInput::CopyKey,
+            SessionInput::Tab,
+            SessionInput::Ui(UiAction::View(CorrectionView::Changes)),
+        ] {
+            assert_eq!(decide(&p, i, 4, 4, &[]), SessionCommand::Ignore, "{i:?}");
+        }
+        assert_eq!(
+            decide(&p, SessionInput::ScrollDown, 4, 4, &[]),
+            SessionCommand::Scroll(1)
+        );
+    }
+
+    #[test]
+    fn preview_style_restarts_and_adjustment_chains() {
+        let p = CorrectionPhase::Preview;
+        assert_eq!(
+            decide(&p, SessionInput::Digit(2), 4, 4, &[]),
+            SessionCommand::RunStyle(1)
+        );
+        assert_eq!(
+            decide(&p, SessionInput::Digit(7), 4, 4, &[]),
+            SessionCommand::RunAdjust(2)
+        );
+        assert_eq!(
+            decide(&p, SessionInput::Ui(UiAction::Tone(5)), 4, 4, &[]),
+            SessionCommand::RunAdjust(0)
+        );
+        assert_eq!(
+            decide(&p, SessionInput::Enter, 4, 4, &[]),
+            SessionCommand::Apply
+        );
+        assert_eq!(
+            decide(&p, SessionInput::Digit(9), 4, 4, &[]),
+            SessionCommand::Ignore
+        );
+    }
+
+    #[test]
+    fn numbers_past_nine_are_reached_only_by_click() {
+        // 7 styles + 6 adjustments = 13 options.
+        assert_eq!(
+            option_for_number(9, 7, 6),
+            Some(SessionCommand::RunAdjust(1))
+        );
+        assert_eq!(
+            option_for_number(12, 7, 6),
+            Some(SessionCommand::RunAdjust(4))
+        );
+        assert_eq!(
+            option_for_number(13, 7, 6),
+            Some(SessionCommand::RunAdjust(5))
+        );
+        assert_eq!(option_for_number(14, 7, 6), None);
+        assert_eq!(option_for_number(0, 7, 6), None);
+        assert_eq!(
+            option_for_number(7, 7, 6),
+            Some(SessionCommand::RunStyle(6))
+        );
+        for p in [CorrectionPhase::Choosing, CorrectionPhase::Preview] {
+            assert_eq!(
+                decide(&p, SessionInput::Digit(10), 7, 6, &[]),
+                SessionCommand::Ignore
+            );
+            assert_eq!(
+                decide(&p, SessionInput::Ui(UiAction::Tone(12)), 7, 6, &[]),
+                SessionCommand::RunAdjust(4)
+            );
+            assert_eq!(
+                decide(&p, SessionInput::Ui(UiAction::Tone(14)), 7, 6, &[]),
+                SessionCommand::Ignore
+            );
+        }
+    }
+
+    #[test]
+    fn choosing_listens_to_enter_escape_the_option_digits_and_arrows() {
+        assert_eq!(
+            wanted_bindings(&CorrectionPhase::Choosing, 3),
+            [
+                "correction_cancel",
+                "correction_apply",
+                "correction_tone_1",
+                "correction_tone_2",
+                "correction_tone_3",
+                "correction_scroll_up",
+                "correction_scroll_down"
+            ]
+        );
+        assert_eq!(
+            wanted_bindings(&CorrectionPhase::Choosing, 13).len(),
+            2 + 9 + 2
+        );
+    }
+
+    #[test]
+    fn choosing_is_an_open_panel_without_a_sound() {
+        let p = CorrectionPhase::Choosing;
+        assert!(wants_mouse_hook(&p));
+        assert_eq!(
+            sound_for_transition(&CorrectionPhase::Hidden, &p, false),
+            None
+        );
+        // The start sound waits for the choice.
+        assert_eq!(
+            sound_for_transition(&p, &CorrectionPhase::Loading, false),
+            Some(CorrectionSound::Start)
+        );
+        assert_eq!(
+            sound_for_transition(&p, &CorrectionPhase::Generating, false),
+            Some(CorrectionSound::Start)
+        );
+        assert_eq!(
+            decide(&p, SessionInput::Dismiss, 4, 4, &[]),
+            SessionCommand::Cancel
+        );
+        // A bound option digit is not typing; a letter is.
+        let bound = wanted_bindings(&p, 8);
+        assert!(!hook_dismisses(
+            HookEvent::TypingKey { vk: 0x35 },
+            None,
+            &bound
+        ));
+        assert!(hook_dismisses(
+            HookEvent::TypingKey { vk: 0x41 },
+            None,
+            &bound
+        ));
+    }
+
+    fn tone(id: &str, kind: crate::correction::settings::ToneKind) -> CorrectionTone {
+        CorrectionTone {
+            id: id.into(),
+            name: id.to_uppercase(),
+            goal: format!("goal {id}"),
+            kind,
+        }
+    }
+
+    #[test]
+    fn tones_split_into_styles_then_adjustments() {
+        use crate::correction::settings::ToneKind::{Adjust, Style};
+        let tones = [
+            tone("a", Adjust),
+            tone("s1", Style),
+            tone("b", Adjust),
+            tone("s2", Style),
+        ];
+        let (styles, adjusts) = split_tones(&tones);
+        let ids = |v: &[CorrectionTone]| v.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&styles), ["s1", "s2"]);
+        assert_eq!(ids(&adjusts), ["a", "b"]);
+    }
+
+    #[test]
+    fn translation_uses_the_traduzir_adjustment_or_the_default_goal() {
+        use crate::correction::settings::ToneKind::Adjust;
+        let mut adjusts = vec![tone("encurtar", Adjust), tone("traduzir", Adjust)];
+        assert_eq!(
+            translate_goal(&adjusts),
+            (Some(1), "goal traduzir".to_string())
+        );
+        adjusts.retain(|t| t.id != "traduzir");
+        let (index, goal) = translate_goal(&adjusts);
+        assert_eq!(index, None);
+        let default = crate::correction::settings::default_tones()
+            .into_iter()
+            .find(|t| t.id == "traduzir")
+            .unwrap();
+        assert_eq!(goal, default.goal);
+    }
+
+    #[test]
+    fn a_style_starts_from_the_original_and_an_adjustment_from_the_result() {
+        let original = "orig";
+        assert_eq!(
+            run_source(&SessionCommand::RunStyle(1), original, Some("now")),
+            "orig"
+        );
+        assert_eq!(
+            run_source(&SessionCommand::RunAdjust(0), original, Some("now")),
+            "now"
+        );
+        // Picked before any style: the adjustment works on the original.
+        assert_eq!(
+            run_source(&SessionCommand::RunAdjust(0), original, None),
+            "orig"
+        );
+    }
+
+    #[test]
+    fn a_style_resets_the_adjustments_and_adjustments_chain() {
+        let mut panel = CorrectionUpdateEvent::hidden();
+        mark_choice(&mut panel, &SessionCommand::RunStyle(1));
+        assert_eq!(panel.current_style, Some(1));
+        mark_choice(&mut panel, &SessionCommand::RunAdjust(0));
+        mark_choice(&mut panel, &SessionCommand::RunAdjust(2));
+        assert_eq!(panel.applied_adjusts, [0, 2]);
+        mark_choice(&mut panel, &SessionCommand::RunStyle(3));
+        assert_eq!(panel.current_style, Some(3));
+        assert!(panel.applied_adjusts.is_empty());
+    }
+
+    #[test]
+    fn translate_shortcut_is_a_correction_action_not_a_temporary_key() {
+        assert!(!TEMPORARY_BINDING_IDS.contains(&"translate_selection"));
+        assert!(crate::settings::get_default_settings()
+            .bindings
+            .contains_key("translate_selection"));
     }
 }

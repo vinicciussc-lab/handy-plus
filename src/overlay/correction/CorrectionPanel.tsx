@@ -157,9 +157,10 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
     if (el && !userScrolled.current) el.scrollTop = el.scrollHeight;
   }, [phase, streamed]);
 
-  // Start at the top when the preview opens or the view changes.
+  // Start at the top when the choice or the preview opens or the view changes.
   useEffect(() => {
-    if (phase === "preview" && textRef.current) textRef.current.scrollTop = 0;
+    if ((phase === "preview" || phase === "choosing") && textRef.current)
+      textRef.current.scrollTop = 0;
   }, [phase, view]);
 
   // One arrow key press = one new nonce. The overlay can't take the wheel or
@@ -167,21 +168,97 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
   useEffect(() => {
     if (nonce === lastNonce.current) return;
     lastNonce.current = nonce;
-    if (nonce === 0 || (phase !== "generating" && phase !== "preview")) return;
+    if (
+      nonce === 0 ||
+      (phase !== "generating" && phase !== "preview" && phase !== "choosing")
+    )
+      return;
     if (phase === "generating") userScrolled.current = true;
     textRef.current?.scrollBy({ top: scrollDir * SCROLL_STEP });
   }, [nonce, scrollDir, phase]);
 
   if (!update || update.phase === "hidden") return null;
 
-  const { tones, model_label: modelLabel } = update;
-  const toneIndex = update.tone_index;
-  const toneModel = [tones[toneIndex], modelLabel].filter(Boolean).join(" · ");
+  const { styles, adjusts, model_label: modelLabel } = update;
+  // One numbered list: the styles, then the adjustments.
+  const options = [...styles, ...adjusts];
+  const current = update.current_style;
+  const applied = update.applied_adjusts;
+  const isOn = (i: number) =>
+    i < styles.length ? i === current : applied.includes(i - styles.length);
+  const running = [
+    current != null ? styles[current] : null,
+    ...applied.map((a) => adjusts[a]),
+  ]
+    .filter(Boolean)
+    .join(" + ");
+  const toneModel = [running, modelLabel].filter(Boolean).join(" · ");
+
+  const optionList = options.length > 0 && (
+    <div className="cor-tones cor-scroll" onWheel={wheelFallback}>
+      {options.map((name, i) => (
+        <div
+          key={i}
+          className={isOn(i) ? "on" : ""}
+          onMouseDown={noFocus}
+          onClick={() => sendAction({ kind: "tone", value: i + 1 })}
+        >
+          <span className="cor-tone-name">{name}</span>
+          <span className="cor-n">{i < 9 ? i + 1 : ""}</span>
+        </div>
+      ))}
+    </div>
+  );
+  const pickHint = options.length > 1 && (
+    <>
+      {" · "}
+      {keyHint(
+        `1-${Math.min(options.length, 9)}`,
+        t("overlay.correction.otherTone"),
+      )}
+    </>
+  );
 
   let card: React.ReactNode = null;
   let pill: React.ReactNode = null;
 
   switch (phase) {
+    case "choosing":
+      card = (
+        <>
+          {update.preloading && (
+            <ProgressRow
+              label={t("overlay.correction.loadingModel")}
+              value={update.load_progress}
+            />
+          )}
+          <div className="cor-grid">
+            <div
+              className="cor-text cor-scroll"
+              ref={textRef}
+              onWheel={wheelFallback}
+            >
+              {update.original}
+            </div>
+            {optionList}
+          </div>
+          <div className="cor-actions">
+            <PanelButton
+              label={t("overlay.correction.cancelButton")}
+              title={t("overlay.correction.cancelTip")}
+              action={{ kind: "cancel" }}
+            />
+          </div>
+          <div className="cor-hint">
+            {keyHint("↑↓", t("overlay.correction.scroll"))}
+            {pickHint}
+            {" · "}
+            {keyHint("Esc", t("overlay.correction.cancel"))}
+          </div>
+        </>
+      );
+      pill = modelLabel;
+      break;
     case "loading":
       card = (
         <>
@@ -276,23 +353,7 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
                   ),
                 )}
             </div>
-            {tones.length > 0 && (
-              <div className="cor-tones cor-scroll" onWheel={wheelFallback}>
-                {tones.map((name, i) => (
-                  <div
-                    key={i}
-                    className={i === toneIndex ? "on" : ""}
-                    onMouseDown={noFocus}
-                    onClick={() =>
-                      i < 9 && sendAction({ kind: "tone", value: i + 1 })
-                    }
-                  >
-                    <span className="cor-tone-name">{name}</span>
-                    <span className="cor-n">{i < 9 ? i + 1 : ""}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            {optionList}
           </div>
           <div className="cor-actions">
             <PanelButton
@@ -318,15 +379,7 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
             {keyHint("Tab", t("overlay.correction.view"))}
             {" · "}
             {keyHint("↑↓", t("overlay.correction.scroll"))}
-            {tones.length > 1 && (
-              <>
-                {" · "}
-                {keyHint(
-                  `1-${tones.length}`,
-                  t("overlay.correction.otherTone"),
-                )}
-              </>
-            )}
+            {pickHint}
             {" · "}
             {keyHint("Ctrl + C", t("overlay.correction.copy"))}
             {" · "}

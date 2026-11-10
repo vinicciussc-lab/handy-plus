@@ -352,7 +352,11 @@
           },
           "correct_selection": {
             "name": "Atalho de Correção",
-            "description": "O atalho para corrigir o texto selecionado. Apertar de novo troca para o próximo tom."
+            "description": "O atalho para corrigir o texto selecionado. Abre o painel para escolher um estilo ou um ajuste; apertar de novo fecha o painel."
+          },
+          "translate_selection": {
+            "name": "Atalho de Tradução",
+            "description": "O atalho para traduzir o texto selecionado na hora (de português para inglês, ou de inglês para português)."
           }
         },
         "errors": {

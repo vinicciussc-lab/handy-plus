@@ -1239,7 +1239,12 @@ export type CorrectionErrorCode = "nothing_selected" | "text_too_long" | "no_mod
  * Modifier keys were still held, so the selection was not copied.
  */
 "keys_held" | "clipboard_failed"
-export type CorrectionPhase = "loading" | "generating" | "preview" | "needs_fallback" | "applied" | 
+export type CorrectionPhase = 
+/**
+ * The panel shows the original text and the options, waiting for a pick.
+ * Nothing is generated yet; the local model may be loading meanwhile.
+ */
+"choosing" | "loading" | "generating" | "preview" | "needs_fallback" | "applied" | 
 /**
  * The original window could not be brought back: the correction is on
  * the clipboard for the user to paste.
@@ -1271,7 +1276,24 @@ export type CorrectionTone = { id: string; name: string; goal: string; kind?: To
 /**
  * Everything the correction panel shows. Sent whenever it changes.
  */
-export type CorrectionUpdateEvent = { phase: CorrectionPhase; original: string; text: string; load_progress: number | null; gen_progress: number | null; tones: string[]; tone_index: number; model_label: string; elapsed_ms: number | null; error: CorrectionErrorCode | null; fallback_options: FallbackOption[]; view: CorrectionView; 
+export type CorrectionUpdateEvent = { phase: CorrectionPhase; original: string; text: string; load_progress: number | null; gen_progress: number | null; 
+/**
+ * Names of the styles, then of the adjustments: one numbered list,
+ * styles first (number = position + 1; only 1 to 9 have a key).
+ */
+styles: string[]; adjusts: string[]; 
+/**
+ * Index in `styles` of the style the current text came from.
+ */
+current_style: number | null; 
+/**
+ * Indexes in `adjusts` applied on top of it, in order.
+ */
+applied_adjusts: number[]; 
+/**
+ * The local model is loading in the background while the user chooses.
+ */
+preloading: boolean; model_label: string; elapsed_ms: number | null; error: CorrectionErrorCode | null; fallback_options: FallbackOption[]; view: CorrectionView; 
 /**
  * Counts the scroll key presses; the panel scrolls once per new value.
  */

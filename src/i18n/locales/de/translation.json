@@ -352,7 +352,11 @@
           },
           "correct_selection": {
             "name": "Correction Shortcut",
-            "description": "The keyboard shortcut to correct the selected text. Pressing it again switches to the next tone."
+            "description": "The keyboard shortcut to correct the selected text. It opens the panel to pick a style or an adjustment; pressing it again closes the panel."
+          },
+          "translate_selection": {
+            "name": "Translation Shortcut",
+            "description": "The keyboard shortcut to translate the selected text right away (Portuguese to English, or English to Portuguese)."
           }
         },
         "errors": {

@@ -1009,6 +1009,16 @@ pub fn get_default_settings() -> AppSettings {
         },
     );
     bindings.insert(
+        "translate_selection".to_string(),
+        ShortcutBinding {
+            id: "translate_selection".to_string(),
+            name: "Translate Selection".to_string(),
+            description: "Translates the selected text with AI.".to_string(),
+            default_binding: "ctrl+shift+section".to_string(),
+            current_binding: "ctrl+shift+section".to_string(),
+        },
+    );
+    bindings.insert(
         "cancel".to_string(),
         ShortcutBinding {
             id: "cancel".to_string(),
@@ -1476,6 +1486,21 @@ mod tests {
     fn correct_selection_default_parses_as_handy_keys_hotkey() {
         let b = &get_default_settings().bindings["correct_selection"];
         assert!(b.default_binding.parse::<handy_keys::Hotkey>().is_ok());
+    }
+
+    #[test]
+    fn translate_selection_default_parses_and_differs_from_correction() {
+        let bindings = get_default_settings().bindings;
+        let b = &bindings["translate_selection"];
+        assert_eq!(b.name, "Translate Selection");
+        #[cfg(target_os = "windows")]
+        assert_eq!(b.default_binding, "ctrl+shift+section");
+        let translate = b.default_binding.parse::<handy_keys::Hotkey>().unwrap();
+        let correct = bindings["correct_selection"]
+            .default_binding
+            .parse::<handy_keys::Hotkey>()
+            .unwrap();
+        assert_ne!(translate, correct);
     }
 
     use super::*;

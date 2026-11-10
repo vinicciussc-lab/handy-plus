@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { commands, type CorrectionSettings as Settings } from "@/bindings";
 import { SettingsGroup, SettingContainer, Textarea } from "@/components/ui";
 import { notify } from "@/stores/noticeStore";
+import { ToggleSwitch } from "@/components/ui/ToggleSwitch";
 import { ShortcutInput } from "../ShortcutInput";
 import { CorrectionProviderSection } from "./CorrectionProviderSection";
 import { CorrectionTonesEditor } from "./CorrectionTonesEditor";
@@ -72,6 +73,17 @@ export const CorrectionSettings: React.FC = () => {
       <SettingsGroup title={t("settings.correction.hotkey.title")}>
         <ShortcutInput
           shortcutId="correct_selection"
+          descriptionMode="tooltip"
+          grouped={true}
+        />
+      </SettingsGroup>
+
+      <SettingsGroup title={t("settings.correction.sounds.title")}>
+        <ToggleSwitch
+          checked={settings.sounds ?? true}
+          onChange={(sounds) => update({ sounds })}
+          label={t("settings.correction.sounds.label")}
+          description={t("settings.correction.sounds.description")}
           descriptionMode="tooltip"
           grouped={true}
         />

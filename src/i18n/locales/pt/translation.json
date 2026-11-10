@@ -975,6 +975,11 @@
         "maxReached": "Limite de {{max}} tons atingido",
         "newName": "Novo tom",
         "newGoal": "Corrija o texto e ajuste o tom como descrito aqui."
+      },
+      "sounds": {
+        "title": "Som",
+        "label": "Som ao corrigir",
+        "description": "Toca um som suave quando a correção começa e quando a prévia fica pronta."
       }
     }
   },

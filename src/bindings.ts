@@ -1245,7 +1245,11 @@ last_load_ms: Partial<{ [key in string]: number }>;
 /**
  * Version of the built-in defaults already offered to this store (0 for old stores).
  */
-defaults_version?: number }
+defaults_version?: number; 
+/**
+ * Soft sounds when a correction starts and when the preview is ready.
+ */
+sounds?: boolean }
 export type CorrectionTone = { id: string; name: string; goal: string }
 /**
  * Everything the correction panel shows. Sent whenever it changes.

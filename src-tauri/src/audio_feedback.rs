@@ -73,6 +73,27 @@ pub fn play_test_sound(app: &AppHandle, sound_type: SoundType) {
     }
 }
 
+/// Plays a bundled sound from `resources/` on the chosen output device, at the
+/// dictation feedback volume times `volume_scale`. Independent of the
+/// `audio_feedback` toggle; returns at once.
+pub(crate) fn play_resource_sound(app: &AppHandle, file: &str, volume_scale: f32) {
+    let Ok(path) = app
+        .path()
+        .resolve(file, tauri::path::BaseDirectory::Resource)
+    else {
+        warn!("Could not resolve sound '{file}'");
+        return;
+    };
+    let settings = settings::get_settings(app);
+    let volume = settings.audio_feedback_volume * volume_scale;
+    let device = settings.selected_output_device.clone();
+    thread::spawn(move || {
+        if let Err(e) = play_audio_file(&path, device, volume) {
+            error!("Failed to play sound '{}': {}", path.display(), e);
+        }
+    });
+}
+
 fn play_sound_async(app: &AppHandle, path: PathBuf) {
     let app_handle = app.clone();
     thread::spawn(move || {

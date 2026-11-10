@@ -975,6 +975,11 @@
         "maxReached": "Limit of {{max}} tones reached",
         "newName": "New tone",
         "newGoal": "Correct the text and adjust its tone as described here."
+      },
+      "sounds": {
+        "title": "Sound",
+        "label": "Sound when correcting",
+        "description": "Plays a soft sound when the correction starts and when the preview is ready."
       }
     }
   },

@@ -69,6 +69,13 @@ pub struct CorrectionSettings {
     /// Version of the built-in defaults already offered to this store (0 for old stores).
     #[serde(default = "zero_defaults_version")]
     pub defaults_version: u32,
+    /// Soft sounds when a correction starts and when the preview is ready.
+    #[serde(default = "default_true")]
+    pub sounds: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn zero_defaults_version() -> u32 {
@@ -176,6 +183,7 @@ impl Default for CorrectionSettings {
             tones: default_tones(),
             last_load_ms: HashMap::new(),
             defaults_version: CURRENT_DEFAULTS_VERSION,
+            sounds: true,
         }
     }
 }
@@ -480,5 +488,16 @@ mod tests {
     fn non_object_value_falls_back_to_defaults() {
         let s = parse_or_salvage(&serde_json::json!(42));
         assert_eq!(s.tones.len(), 5);
+    }
+
+    #[test]
+    fn sounds_default_on() {
+        assert!(CorrectionSettings::default().sounds);
+        let s: CorrectionSettings = serde_json::from_str("{}").unwrap();
+        assert!(s.sounds);
+        let salvaged = parse_or_salvage(&serde_json::json!({"unload_timeout": "nope"}));
+        assert!(salvaged.sounds);
+        let off = parse_or_salvage(&serde_json::json!({"sounds": false, "unload_timeout": "nope"}));
+        assert!(!off.sounds);
     }
 }

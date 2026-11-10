@@ -279,6 +279,39 @@ pub fn wanted_bindings(phase: &CorrectionPhase, choices: usize) -> Vec<String> {
     }
 }
 
+/// Volume of the correction sounds relative to the dictation feedback volume.
+pub const CORRECTION_SOUND_VOLUME: f32 = 0.6;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CorrectionSound {
+    Start,
+    Ready,
+}
+
+impl CorrectionSound {
+    fn file(self) -> &'static str {
+        match self {
+            Self::Start => "resources/correction_start.wav",
+            Self::Ready => "resources/correction_ready.wav",
+        }
+    }
+}
+
+/// The start sound plays once per session, when work first begins (loading or
+/// generating); the ready sound plays every time the preview appears.
+pub fn sound_for_transition(
+    _prev: &CorrectionPhase,
+    next: &CorrectionPhase,
+    start_played: bool,
+) -> Option<CorrectionSound> {
+    use CorrectionPhase as P;
+    match next {
+        P::Loading | P::Generating if !start_played => Some(CorrectionSound::Start),
+        P::Preview => Some(CorrectionSound::Ready),
+        _ => None,
+    }
+}
+
 fn tone_digit(id: &str) -> Option<u8> {
     let digit: u8 = id.strip_prefix(TONE_PREFIX)?.parse().ok()?;
     (1..=9).contains(&digit).then_some(digit)
@@ -601,6 +634,7 @@ async fn run(app: AppHandle, inputs: UnboundedReceiver<SessionInput>) {
         app,
         inputs,
         started: Instant::now(),
+        start_played: false,
     };
     if let Err(code) = session.correct().await {
         info!("Correction ended with {code:?}");
@@ -616,6 +650,8 @@ struct Session {
     panel: CorrectionUpdateEvent,
     /// Start of the current attempt (the shortcut, or the last tone change).
     started: Instant,
+    /// The start sound already played in this session.
+    start_played: bool,
 }
 
 type Step<T> = Result<Option<T>, CorrectionErrorCode>;
@@ -634,9 +670,25 @@ impl Session {
     }
 
     async fn enter(&mut self, phase: CorrectionPhase, choices: usize) {
+        self.play_sound_for(&phase);
         self.panel.phase = phase.clone();
         self.show(phase.clone());
         set_bindings(&self.app, wanted_bindings(&phase, choices)).await;
+    }
+
+    fn play_sound_for(&mut self, next: &CorrectionPhase) {
+        let sound = sound_for_transition(&self.panel.phase, next, self.start_played);
+        let Some(sound) = sound else { return };
+        if sound == CorrectionSound::Start {
+            self.start_played = true;
+        }
+        if get_correction_settings(&self.app).sounds {
+            crate::audio_feedback::play_resource_sound(
+                &self.app,
+                sound.file(),
+                CORRECTION_SOUND_VOLUME,
+            );
+        }
     }
 
     async fn hold(&mut self, phase: CorrectionPhase, how_long: Duration) {
@@ -1361,5 +1413,25 @@ mod tests {
         ));
         assert_eq!(out, Some(7));
         assert!(ticks >= 1, "ticked {ticks} times");
+    }
+
+    #[test]
+    fn sounds_play_on_start_once_and_on_each_preview() {
+        use CorrectionPhase::*;
+        assert_eq!(
+            sound_for_transition(&Hidden, &Loading, false),
+            Some(CorrectionSound::Start)
+        );
+        assert_eq!(sound_for_transition(&Loading, &Generating, true), None);
+        assert_eq!(
+            sound_for_transition(&Hidden, &Generating, false),
+            Some(CorrectionSound::Start)
+        );
+        assert_eq!(
+            sound_for_transition(&Generating, &Preview, true),
+            Some(CorrectionSound::Ready)
+        );
+        assert_eq!(sound_for_transition(&Preview, &Generating, true), None);
+        assert_eq!(sound_for_transition(&Generating, &Error, true), None);
     }
 }

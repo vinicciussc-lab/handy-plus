@@ -578,10 +578,78 @@ mod tests {
                 );
             }
         }
+
+        // Traduzir: Portuguese comes out in English, English comes out in Portuguese.
+        let traduzir = default_tones()
+            .into_iter()
+            .find(|t| t.id == "traduzir")
+            .expect("Traduzir is a default tone");
+        let mut failures = Vec::new();
+        for (i, text) in SPEC_TEXTS.iter().enumerate() {
+            let (system, user) = build_messages(DEFAULT_STYLE_RULES, &traduzir.goal, text);
+            let raw = stream_chat(&target, &system, &user, |_| {}).await;
+            let out = match raw {
+                Ok(r) => clean_output(text, &r),
+                Err(e) => {
+                    engine.unload();
+                    panic!("stream_chat failed: {e}");
+                }
+            };
+            report.push_str(&format!(
+                "[Traduzir pt #{}]
+{out}
+
+",
+                i + 1
+            ));
+            let padded = format!(" {} ", out.to_lowercase());
+            if [" você ", " não ", " muito ", " que "]
+                .iter()
+                .any(|w| padded.contains(w))
+            {
+                failures.push(format!("pt #{} still has Portuguese words: {out}", i + 1));
+            }
+            if ![" the ", " i ", " you ", " is "]
+                .iter()
+                .any(|w| padded.contains(w))
+            {
+                failures.push(format!("pt #{} has no common English words: {out}", i + 1));
+            }
+            if out.contains('—') || out.contains('–') {
+                failures.push(format!("pt #{} has a dash: {out}", i + 1));
+            }
+        }
+        let english = "I think the game is worth it even with the bugs, but the price is too high for what it offers, so I would wait for a sale.";
+        let (system, user) = build_messages(DEFAULT_STYLE_RULES, &traduzir.goal, english);
+        let out = match stream_chat(&target, &system, &user, |_| {}).await {
+            Ok(r) => clean_output(english, &r),
+            Err(e) => {
+                engine.unload();
+                panic!("stream_chat failed: {e}");
+            }
+        };
+        report.push_str(&format!(
+            "[Traduzir en]
+{out}
+
+"
+        ));
+        let padded = format!(" {} ", out.to_lowercase());
+        if ![" que ", " não ", " muito ", " o ", " é "]
+            .iter()
+            .any(|w| padded.contains(w))
+        {
+            failures.push(format!("en text did not come out in Portuguese: {out}"));
+        }
+        if out.contains('—') || out.contains('–') {
+            failures.push(format!("en text has a dash: {out}"));
+        }
+
         print!("{report}");
         if let Ok(path) = std::env::var("HANDY_PLUS_TEST_REPORT") {
             std::fs::write(path, &report).unwrap();
         }
         engine.unload();
+        assert!(failures.is_empty(), "Traduzir failures: {failures:#?}");
     }
 }

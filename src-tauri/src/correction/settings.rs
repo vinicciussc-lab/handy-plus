@@ -11,7 +11,7 @@ use tauri_plugin_store::StoreExt;
 pub const CORRECTION_STORE_PATH: &str = "correction_store.json";
 const CORRECTION_STORE_KEY: &str = "correction_settings";
 /// Bump when new default tones should be offered once to existing users.
-pub const CURRENT_DEFAULTS_VERSION: u32 = 2;
+pub const CURRENT_DEFAULTS_VERSION: u32 = 3;
 const MAX_TONES: usize = 9;
 
 pub const DEFAULT_STYLE_RULES: &str = "Você revisa textos em português do Brasil escritos pelo usuário para WhatsApp, Discord, e-mail e comentários na internet.
@@ -84,6 +84,11 @@ fn zero_defaults_version() -> u32 {
 
 const DESENVOLVER_GOAL: &str = "Desenvolva o texto de verdade: para cada ideia principal, escreva pelo menos uma frase a mais explicando o porquê ou dando um exemplo que o próprio texto já sugere, e ligue as ideias com conectivos simples. O resultado deve ficar com mais ou menos o dobro do tamanho do texto corrigido. Organize em parágrafos se ficar longo. Mantenha o jeito de falar do usuário e a mesma opinião. Não invente fatos específicos, como números, nomes ou datas, que não estavam no texto.";
 
+const TRADUZIR_GOAL: &str = "Traduza o texto. Se ele estiver em português, traduza para o inglês; se já estiver em inglês, traduza para o português do Brasil. Use uma tradução natural, como uma pessoa nativa escreveria, mantendo o mesmo tom, o mesmo nível de formalidade e as mesmas ideias. Não explique a tradução. Esta tarefa é uma tradução, não uma correção, e é a exceção às regras acima sobre o idioma: se o texto estiver em português, a resposta tem que ser escrita inteira em inglês (English), sem nenhuma palavra em português; se estiver em inglês, a resposta tem que ser escrita inteira em português do Brasil. Nunca devolva o texto no mesmo idioma em que ele chegou.";
+
+/// Tones added after the first release: (defaults version that introduced it, id).
+const TONES_ADDED_BY_VERSION: [(u32, &str); 2] = [(2, "desenvolver"), (3, "traduzir")];
+
 pub fn default_tones() -> Vec<CorrectionTone> {
     let tone = |id: &str, name: &str, goal: &str| CorrectionTone {
         id: id.to_string(),
@@ -116,6 +121,7 @@ pub fn default_tones() -> Vec<CorrectionTone> {
             "Desenvolver",
             DESENVOLVER_GOAL,
         ),
+        tone("traduzir", "Traduzir", TRADUZIR_GOAL),
     ]
 }
 
@@ -160,9 +166,12 @@ pub fn migrate_defaults(s: &mut CorrectionSettings) -> bool {
         }
     }
     if s.defaults_version < CURRENT_DEFAULTS_VERSION {
-        if !s.tones.iter().any(|t| t.id == "desenvolver") && s.tones.len() < MAX_TONES {
-            if let Some(tone) = new_tones.into_iter().find(|t| t.id == "desenvolver") {
-                s.tones.push(tone);
+        let from = s.defaults_version;
+        for (version, id) in TONES_ADDED_BY_VERSION {
+            if from < version && !s.tones.iter().any(|t| t.id == id) && s.tones.len() < MAX_TONES {
+                if let Some(tone) = new_tones.iter().find(|t| t.id == id) {
+                    s.tones.push(tone.clone());
+                }
             }
         }
         s.defaults_version = CURRENT_DEFAULTS_VERSION;
@@ -275,7 +284,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_tones_are_the_five_from_the_spec() {
+    fn default_tones_are_the_six_from_the_spec() {
         let names: Vec<_> = default_tones().into_iter().map(|t| t.name).collect();
         assert_eq!(
             names,
@@ -284,19 +293,46 @@ mod tests {
                 "Mais formal",
                 "Mais curto",
                 "Melhorar argumentos",
-                "Desenvolver"
+                "Desenvolver",
+                "Traduzir"
             ]
         );
     }
 
     #[test]
-    fn defaults_include_desenvolver_last() {
+    fn defaults_include_desenvolver_fifth() {
         let t = default_tones();
-        assert_eq!(t.len(), 5);
         assert_eq!(
             (t[4].id.as_str(), t[4].name.as_str()),
             ("desenvolver", "Desenvolver")
         );
+    }
+
+    #[test]
+    fn defaults_include_traduzir_last() {
+        let t = default_tones();
+        assert_eq!(t.len(), 6);
+        assert_eq!(
+            (t[5].id.as_str(), t[5].name.as_str()),
+            ("traduzir", "Traduzir")
+        );
+        assert!(t[5].goal.starts_with("Traduza o texto."));
+    }
+
+    #[test]
+    fn v2_store_gets_traduzir_once() {
+        let mut s = CorrectionSettings {
+            tones: default_tones()[..5].to_vec(),
+            defaults_version: 2,
+            ..Default::default()
+        };
+        assert!(migrate_defaults(&mut s));
+        assert_eq!(s.tones.len(), 6);
+        assert_eq!(s.tones[5].id, "traduzir");
+        assert_eq!(s.defaults_version, 3);
+        s.tones.pop();
+        assert!(!migrate_defaults(&mut s));
+        assert_eq!(s.tones.len(), 5);
     }
 
     #[test]
@@ -307,8 +343,9 @@ mod tests {
             ..Default::default()
         };
         assert!(migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 5);
-        assert_eq!(s.defaults_version, 2);
+        assert_eq!(s.tones.len(), 6);
+        assert_eq!(s.defaults_version, 3);
+        s.tones.pop();
         s.tones.pop();
         assert!(!migrate_defaults(&mut s));
         assert_eq!(s.tones.len(), 4);
@@ -331,7 +368,7 @@ mod tests {
         };
         migrate_defaults(&mut s);
         assert_eq!(s.tones.len(), 9);
-        assert_eq!(s.defaults_version, 2);
+        assert_eq!(s.defaults_version, 3);
     }
 
     #[test]
@@ -341,8 +378,8 @@ mod tests {
             ..Default::default()
         };
         assert!(migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 5);
-        assert_eq!(s.defaults_version, 2);
+        assert_eq!(s.tones.len(), 6);
+        assert_eq!(s.defaults_version, 3);
     }
 
     #[test]
@@ -376,7 +413,7 @@ mod tests {
     fn settings_missing_fields_fall_back_to_defaults() {
         let s: CorrectionSettings = serde_json::from_str(r#"{"models_dir":"E:\\m"}"#).unwrap();
         assert_eq!(s.models_dir, r"E:\m");
-        assert_eq!(s.tones.len(), 5);
+        assert_eq!(s.tones.len(), 6);
     }
 
     #[test]
@@ -487,7 +524,7 @@ mod tests {
     #[test]
     fn non_object_value_falls_back_to_defaults() {
         let s = parse_or_salvage(&serde_json::json!(42));
-        assert_eq!(s.tones.len(), 5);
+        assert_eq!(s.tones.len(), 6);
     }
 
     #[test]

@@ -1,11 +1,11 @@
 /* Correction panel: a card (progress, streamed text, preview) above a pill.
-   Lives in the 640x420 overlay window; the card scrolls inside instead of
+   Lives in the 760x460 overlay window; the card scrolls inside instead of
    overflowing. Colors and fonts come from RecordingOverlay.css. */
 .cor-wrap {
   --cor-ok: #34b87c;
   --cor-pill-h: 32px;
   --cor-gap: 8px;
-  width: min(616px, calc(100vw - 4px));
+  width: min(736px, calc(100vw - 4px));
   max-height: calc(100vh - 2px);
   display: flex;
   flex-direction: column;
@@ -25,8 +25,8 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 10px 12px;
-  border-radius: 14px;
+  padding: 20px;
+  border-radius: 16px;
   background: var(--s-surface);
   border: 1px solid var(--s-border);
   color: var(--color-text);
@@ -126,10 +126,10 @@
 }
 .cor-stream {
   flex: 1 1 auto;
-  margin-top: 6px;
-  padding-top: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px solid var(--s-hair);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -152,9 +152,9 @@
 /* Preview */
 .cor-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 112px;
+  grid-template-columns: minmax(0, 1fr) 140px;
   grid-template-rows: minmax(0, 1fr);
-  gap: 10px;
+  gap: 12px;
   flex: 1 1 auto;
   /* The text and the tone list scroll on their own; the hint stays visible. */
   min-height: 0;
@@ -163,13 +163,20 @@
   flex: none;
   display: flex;
   gap: 4px;
-  margin-bottom: 6px;
-  font-size: 11px;
+  margin-bottom: 12px;
+  font-size: 12px;
 }
 .cor-view {
-  padding: 1px 8px;
+  padding: 2px 10px;
+  border: 0;
   border-radius: 999px;
+  background: transparent;
   color: var(--s-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.cor-view:hover {
+  background: var(--s-hair);
 }
 .cor-view.on {
   background: var(--s-hair);
@@ -177,7 +184,7 @@
   font-weight: 600;
 }
 .cor-text {
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -201,9 +208,13 @@
   display: flex;
   justify-content: space-between;
   gap: 6px;
-  padding: 3px 6px;
+  padding: 5px 8px;
   border-radius: 6px;
   color: var(--s-muted);
+  cursor: pointer;
+}
+.cor-tones > div:hover {
+  background: var(--s-hair);
 }
 .cor-tones > div.on {
   background: var(--s-hair);
@@ -218,10 +229,35 @@
 .cor-n {
   color: var(--s-faint);
 }
+.cor-actions {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.cor-btn {
+  padding: 5px 16px;
+  border: 1px solid var(--s-border);
+  border-radius: 8px;
+  background: var(--s-hair);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+.cor-btn:hover {
+  filter: brightness(1.15);
+}
+.cor-btn.primary {
+  border-color: transparent;
+  background: var(--cor-ok);
+  color: #0b1d14;
+  font-weight: 600;
+}
 .cor-hint {
   flex: none;
-  margin-top: 8px;
-  padding-top: 6px;
+  margin-top: 12px;
+  padding-top: 8px;
   border-top: 1px solid var(--s-hair);
   color: var(--s-faint);
   font-size: 11px;
@@ -245,5 +281,8 @@
   margin-bottom: 4px;
 }
 .cor-fb-list > div {
-  padding: 3px 0;
+  padding: 4px 0;
+}
+.cor-fb-opt {
+  cursor: pointer;
 }

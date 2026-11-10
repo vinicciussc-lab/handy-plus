@@ -27,6 +27,12 @@ async setCorrectionSettingsCmd(settings: CorrectionSettings) : Promise<Result<nu
 async listLocalModels(dir: string) : Promise<LocalModel[]> {
     return await TAURI_INVOKE("list_local_models", { dir });
 },
+/**
+ * A click in the correction panel.
+ */
+async correctionUiAction(action: UiAction) : Promise<void> {
+    await TAURI_INVOKE("correction_ui_action", { action });
+},
 async resetBinding(id: string) : Promise<Result<BindingResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reset_binding", { id }) };
@@ -1622,6 +1628,14 @@ export type TranscriptionOutcome =
  */
 "failed"
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
+/**
+ * What a click in the panel asks for.
+ */
+export type UiAction = { kind: "apply" } | { kind: "copy" } | { kind: "cancel" } | 
+/**
+ * 1-based, like the digit keys.
+ */
+{ kind: "tone"; value: number } | { kind: "view"; value: CorrectionView }
 export type VadBackend = "silero" | "earshot"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 

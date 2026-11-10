@@ -687,6 +687,7 @@ pub fn run(cli_args: CliArgs) {
             correction::settings::get_correction_settings_cmd,
             correction::settings::set_correction_settings_cmd,
             correction::models::list_local_models,
+            correction::session::correction_ui_action,
             shortcut::reset_binding,
             shortcut::change_shortcut_activation_setting,
             shortcut::change_hold_threshold_ms_setting,

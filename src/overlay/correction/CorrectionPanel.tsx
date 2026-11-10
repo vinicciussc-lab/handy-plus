@@ -1,10 +1,12 @@
 import React, { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { commands } from "@/bindings";
 import type {
   CorrectionErrorCode,
   CorrectionUpdateEvent,
   CorrectionView,
   FallbackOption,
+  UiAction,
 } from "@/bindings";
 import i18n from "@/i18n";
 import { getLanguageDirection } from "@/lib/utils/rtl";
@@ -40,8 +42,8 @@ const VIEW_KEYS: Record<CorrectionView, string> = {
 };
 const VIEWS: CorrectionView[] = ["corrected", "changes", "original"];
 
-// Three lines of the 14px / 1.5 text per arrow key press.
-const SCROLL_STEP = 3 * 14 * 1.5;
+// Three lines of the 15px / 1.5 text per arrow key press.
+const SCROLL_STEP = 3 * 15 * 1.5;
 
 const CHECK = "✓";
 
@@ -80,6 +82,49 @@ const ProgressRow: React.FC<ProgressRowProps> = ({ label, value, done }) => {
     </div>
   );
 };
+
+// The window never takes keyboard focus, and neither must a click.
+const noFocus = (e: React.MouseEvent) => e.preventDefault();
+
+const sendAction = (action: UiAction) => {
+  void commands.correctionUiAction(action);
+};
+
+// The overlay may not receive native wheel scrolling: if the wheel did not
+// move the box by the next frame, move it here.
+const wheelFallback = (e: React.WheelEvent<HTMLElement>) => {
+  const el = e.currentTarget;
+  const before = el.scrollTop;
+  const delta = e.deltaMode === 1 ? e.deltaY * 15 * 1.5 : e.deltaY;
+  requestAnimationFrame(() => {
+    if (el.scrollTop === before) el.scrollTop = before + delta;
+  });
+};
+
+interface ButtonProps {
+  label: string;
+  title: string;
+  action: UiAction;
+  primary?: boolean;
+}
+
+const PanelButton: React.FC<ButtonProps> = ({
+  label,
+  title,
+  action,
+  primary,
+}) => (
+  <button
+    type="button"
+    tabIndex={-1}
+    title={title}
+    className={`cor-btn ${primary ? "primary" : ""}`}
+    onMouseDown={noFocus}
+    onClick={() => sendAction(action)}
+  >
+    {label}
+  </button>
+);
 
 const keyHint = (label: string, text: string) => (
   <>
@@ -164,7 +209,11 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
             label={t("overlay.correction.generating")}
             value={update.gen_progress}
           />
-          <div className="cor-stream cor-scroll" ref={textRef}>
+          <div
+            className="cor-stream cor-scroll"
+            ref={textRef}
+            onWheel={wheelFallback}
+          >
             {update.text}
             <span className="cor-caret" />
           </div>
@@ -172,6 +221,13 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
             {keyHint("↑↓", t("overlay.correction.scroll"))}
             {" · "}
             {keyHint("Esc", t("overlay.correction.cancel"))}
+          </div>
+          <div className="cor-actions">
+            <PanelButton
+              label={t("overlay.correction.cancelButton")}
+              title={t("overlay.correction.cancelTip")}
+              action={{ kind: "cancel" }}
+            />
           </div>
         </>
       );
@@ -182,13 +238,24 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
         <>
           <div className="cor-viewbar">
             {VIEWS.map((v) => (
-              <span key={v} className={`cor-view ${v === view ? "on" : ""}`}>
+              <button
+                type="button"
+                tabIndex={-1}
+                key={v}
+                className={`cor-view ${v === view ? "on" : ""}`}
+                onMouseDown={noFocus}
+                onClick={() => sendAction({ kind: "view", value: v })}
+              >
                 {t(VIEW_KEYS[v])}
-              </span>
+              </button>
             ))}
           </div>
           <div className="cor-grid">
-            <div className="cor-text cor-scroll" ref={textRef}>
+            <div
+              className="cor-text cor-scroll"
+              ref={textRef}
+              onWheel={wheelFallback}
+            >
               {view === "corrected" && update.text}
               {view === "original" && update.original}
               {view === "changes" &&
@@ -203,15 +270,40 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
                 )}
             </div>
             {tones.length > 0 && (
-              <div className="cor-tones cor-scroll">
+              <div className="cor-tones cor-scroll" onWheel={wheelFallback}>
                 {tones.map((name, i) => (
-                  <div key={i} className={i === toneIndex ? "on" : ""}>
+                  <div
+                    key={i}
+                    className={i === toneIndex ? "on" : ""}
+                    onMouseDown={noFocus}
+                    onClick={() =>
+                      i < 9 && sendAction({ kind: "tone", value: i + 1 })
+                    }
+                  >
                     <span className="cor-tone-name">{name}</span>
-                    <span className="cor-n">{i + 1}</span>
+                    <span className="cor-n">{i < 9 ? i + 1 : ""}</span>
                   </div>
                 ))}
               </div>
             )}
+          </div>
+          <div className="cor-actions">
+            <PanelButton
+              label={t("overlay.correction.cancelButton")}
+              title={t("overlay.correction.cancelTip")}
+              action={{ kind: "cancel" }}
+            />
+            <PanelButton
+              label={t("overlay.correction.copyButton")}
+              title={t("overlay.correction.copyTip")}
+              action={{ kind: "copy" }}
+            />
+            <PanelButton
+              label={t("overlay.correction.applyButton")}
+              title={t("overlay.correction.applyTip")}
+              action={{ kind: "apply" }}
+              primary
+            />
           </div>
           <div className="cor-hint">
             {keyHint("Enter", t("overlay.correction.apply"))}
@@ -228,6 +320,8 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
                 )}
               </>
             )}
+            {" · "}
+            {keyHint("Ctrl + C", t("overlay.correction.copy"))}
             {" · "}
             {keyHint("Esc", t("overlay.correction.cancel"))}
           </div>
@@ -249,7 +343,12 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
           <div className="cor-fb-title">{t("overlay.correction.gpuFull")}</div>
           <div className="cor-fb-list">
             {update.fallback_options.map((option, i) => (
-              <div key={option}>
+              <div
+                key={option}
+                className="cor-fb-opt"
+                onMouseDown={noFocus}
+                onClick={() => sendAction({ kind: "tone", value: i + 1 })}
+              >
                 {keyHint(String(i + 1), t(FALLBACK_KEYS[option]))}
               </div>
             ))}

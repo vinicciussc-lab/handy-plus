@@ -57,8 +57,8 @@ const OVERLAY_STREAM_HEIGHT: f64 = 120.0;
 
 // Handy Plus: the text correction panel (progress, preview and tone list).
 const CORRECTION_STATE: &str = "correction";
-const CORRECTION_WIDTH: f64 = 640.0;
-const CORRECTION_HEIGHT: f64 = 420.0;
+const CORRECTION_WIDTH: f64 = 760.0;
+const CORRECTION_HEIGHT: f64 = 460.0;
 
 const NOTICE_STATE: &str = "notice";
 const LIVE_NOTICE_STATE: &str = "live_notice";
@@ -869,7 +869,7 @@ mod tests {
             overlay_dimensions("correction"),
             (CORRECTION_WIDTH, CORRECTION_HEIGHT)
         );
-        assert_eq!((CORRECTION_WIDTH, CORRECTION_HEIGHT), (640.0, 420.0));
+        assert_eq!((CORRECTION_WIDTH, CORRECTION_HEIGHT), (760.0, 460.0));
         assert_eq!(
             overlay_dimensions("recording"),
             (OVERLAY_WIDTH, OVERLAY_HEIGHT)

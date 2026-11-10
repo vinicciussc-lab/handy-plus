@@ -40,6 +40,8 @@ const TICK: Duration = Duration::from_millis(200);
 const ERROR_HOLD: Duration = Duration::from_secs(3);
 const APPLIED_HOLD: Duration = Duration::from_secs(2);
 const COPIED_HOLD: Duration = Duration::from_secs(3);
+/// The "copied" pill after the user asked for the copy.
+const COPY_HOLD: Duration = Duration::from_secs(2);
 /// Pause after bringing the original window back, before pasting.
 const SETTLE_DELAY: Duration = Duration::from_millis(80);
 /// A preview nobody answers is dropped, so a failed key registration can't
@@ -55,6 +57,7 @@ const TONE_PREFIX: &str = "correction_tone_";
 const VIEW_ID: &str = "correction_view";
 const SCROLL_UP_ID: &str = "correction_scroll_up";
 const SCROLL_DOWN_ID: &str = "correction_scroll_down";
+const COPY_ID: &str = "correction_copy";
 /// Temporary shortcuts, registered only while a session needs them. They are
 /// not in `AppSettings.bindings`, so they never show on the shortcuts screen
 /// and startup/suspend/resume never touch them.
@@ -64,6 +67,7 @@ pub const TEMPORARY_BINDING_IDS: &[&str] = &[
     VIEW_ID,
     SCROLL_UP_ID,
     SCROLL_DOWN_ID,
+    COPY_ID,
     "correction_tone_1",
     "correction_tone_2",
     "correction_tone_3",
@@ -184,6 +188,24 @@ pub enum SessionInput {
     Tab,
     ScrollUp,
     ScrollDown,
+    /// Ctrl+C in the preview.
+    CopyKey,
+    /// The correction shortcut pressed again while a session is open.
+    Shortcut,
+    /// A click in the panel.
+    Ui(UiAction),
+}
+
+/// What a click in the panel asks for.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum UiAction {
+    Apply,
+    Copy,
+    Cancel,
+    /// 1-based, like the digit keys.
+    Tone(u8),
+    View(CorrectionView),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,6 +215,9 @@ pub enum SessionCommand {
     Regenerate(usize),
     UseFallback(FallbackOption),
     NextView,
+    SetView(CorrectionView),
+    /// Put the correction on the clipboard and close.
+    Copy,
     /// -1 up, 1 down.
     Scroll(i8),
     Ignore,
@@ -207,11 +232,23 @@ pub fn decide(
     fallback: &[FallbackOption],
 ) -> SessionCommand {
     use CorrectionPhase as P;
+    // A tone click is the digit key.
+    let input = match input {
+        SessionInput::Ui(UiAction::Tone(n)) => SessionInput::Digit(n),
+        other => other,
+    };
     match (phase, input) {
-        (P::Loading | P::Generating | P::Preview | P::NeedsFallback, SessionInput::Escape) => {
-            SessionCommand::Cancel
+        (
+            P::Loading | P::Generating | P::Preview | P::NeedsFallback,
+            SessionInput::Escape | SessionInput::Shortcut | SessionInput::Ui(UiAction::Cancel),
+        ) => SessionCommand::Cancel,
+        (P::Preview, SessionInput::Enter | SessionInput::Ui(UiAction::Apply)) => {
+            SessionCommand::Apply
         }
-        (P::Preview, SessionInput::Enter) => SessionCommand::Apply,
+        (P::Preview, SessionInput::CopyKey | SessionInput::Ui(UiAction::Copy)) => {
+            SessionCommand::Copy
+        }
+        (P::Preview, SessionInput::Ui(UiAction::View(v))) => SessionCommand::SetView(v),
         (P::Preview, SessionInput::Tab) => SessionCommand::NextView,
         (P::Generating | P::Preview, SessionInput::ScrollUp) => SessionCommand::Scroll(-1),
         (P::Generating | P::Preview, SessionInput::ScrollDown) => SessionCommand::Scroll(1),
@@ -237,6 +274,26 @@ pub fn decide(
 /// correction runs.
 pub fn should_start(dictation_busy: bool, session_active: bool) -> bool {
     !dictation_busy && !session_active
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShortcutRoute {
+    Start,
+    /// Pressed again with a session open: closes it.
+    Close,
+    Ignore,
+}
+
+/// What the correction shortcut does now. An open session takes it as "close";
+/// a dictation in progress swallows it.
+pub fn shortcut_route(dictation_busy: bool, session_active: bool) -> ShortcutRoute {
+    if session_active {
+        ShortcutRoute::Close
+    } else if should_start(dictation_busy, false) {
+        ShortcutRoute::Start
+    } else {
+        ShortcutRoute::Ignore
+    }
 }
 
 pub fn check_text(text: &str) -> Result<(), CorrectionErrorCode> {
@@ -269,6 +326,7 @@ pub fn wanted_bindings(phase: &CorrectionPhase, choices: usize) -> Vec<String> {
                 VIEW_ID.to_string(),
                 SCROLL_UP_ID.to_string(),
                 SCROLL_DOWN_ID.to_string(),
+                COPY_ID.to_string(),
             ])
             .collect(),
         P::NeedsFallback => [CANCEL_ID.to_string(), APPLY_ID.to_string()]
@@ -325,6 +383,7 @@ pub fn binding_key(id: &str) -> Option<String> {
         VIEW_ID => Some("tab".to_string()),
         SCROLL_UP_ID => Some("up".to_string()),
         SCROLL_DOWN_ID => Some("down".to_string()),
+        COPY_ID => Some("ctrl+c".to_string()),
         _ => tone_digit(id).map(|d| d.to_string()),
     }
 }
@@ -336,6 +395,7 @@ pub fn input_for_binding(id: &str) -> Option<SessionInput> {
         VIEW_ID => Some(SessionInput::Tab),
         SCROLL_UP_ID => Some(SessionInput::ScrollUp),
         SCROLL_DOWN_ID => Some(SessionInput::ScrollDown),
+        COPY_ID => Some(SessionInput::CopyKey),
         _ => tone_digit(id).map(SessionInput::Digit),
     }
 }
@@ -500,7 +560,15 @@ pub fn input(app: &AppHandle, input: SessionInput) {
     }
 }
 
-/// Starts a correction unless one is running or a dictation is recording.
+/// A click in the correction panel.
+#[tauri::command]
+#[specta::specta]
+pub fn correction_ui_action(app: AppHandle, action: UiAction) {
+    input(&app, SessionInput::Ui(action));
+}
+
+/// The correction shortcut: starts a correction, or closes the open one.
+/// Ignored while a dictation is recording or being processed.
 pub fn begin(app: &AppHandle) {
     let Some(state) = app.try_state::<CorrectionSessionState>() else {
         return;
@@ -511,13 +579,23 @@ pub fn begin(app: &AppHandle) {
         || app
             .try_state::<Arc<AudioRecordingManager>>()
             .is_some_and(|m| m.is_recording());
-    if !should_start(dictation_busy, state.active.load(Ordering::SeqCst))
-        || state
-            .active
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
+    match shortcut_route(dictation_busy, state.active.load(Ordering::SeqCst)) {
+        ShortcutRoute::Close => {
+            input(app, SessionInput::Shortcut);
+            return;
+        }
+        ShortcutRoute::Ignore => {
+            debug!("Correction shortcut ignored (dictation running)");
+            return;
+        }
+        ShortcutRoute::Start => {}
+    }
+    if state
+        .active
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
     {
-        debug!("Correction shortcut ignored (dictation or another correction running)");
+        debug!("Correction shortcut ignored (another correction just started)");
         return;
     }
     let (tx, rx) = unbounded_channel();
@@ -715,6 +793,10 @@ impl Session {
                     self.panel.view = self.panel.view.next();
                     emit(&self.app, &self.panel);
                 }
+                SessionCommand::SetView(v) => {
+                    self.panel.view = v;
+                    emit(&self.app, &self.panel);
+                }
                 SessionCommand::Scroll(d) => {
                     self.panel.scroll_nonce = self.panel.scroll_nonce.wrapping_add(1);
                     self.panel.scroll_dir = d;
@@ -757,6 +839,10 @@ impl Session {
                 SessionCommand::Apply => {
                     let text = self.panel.text.clone();
                     return self.apply(captured.hwnd, text).await;
+                }
+                SessionCommand::Copy => {
+                    let text = self.panel.text.clone();
+                    return self.copy(text).await;
                 }
                 SessionCommand::Regenerate(i) => {
                     tone = i;
@@ -940,6 +1026,34 @@ impl Session {
         Ok(Some(text))
     }
 
+    /// Leaves the correction on the clipboard (on purpose) and closes.
+    async fn copy(&mut self, text: String) -> Result<(), CorrectionErrorCode> {
+        set_bindings(&self.app, Vec::new()).await;
+        overlay::hide_recording_overlay(&self.app);
+        let app = self.app.clone();
+        // Under the paste lock, like the "copied" fallback of `apply`.
+        let done = tauri::async_runtime::spawn_blocking(move || {
+            crate::clipboard::with_paste_lock(|| {
+                crate::clipboard::write_text_to_clipboard(&app, &text)
+            })
+        })
+        .await;
+        match done {
+            Ok(Ok(())) => {
+                self.hold(CorrectionPhase::Copied, COPY_HOLD).await;
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                warn!("Could not copy the correction: {e}");
+                Err(CorrectionErrorCode::ClipboardFailed)
+            }
+            Err(e) => {
+                warn!("Copy task failed: {e}");
+                Err(CorrectionErrorCode::ClipboardFailed)
+            }
+        }
+    }
+
     /// Pastes the correction over the selection in the original window, or
     /// leaves it on the clipboard when that window can't be brought back.
     async fn apply(&mut self, hwnd: isize, text: String) -> Result<(), CorrectionErrorCode> {
@@ -1083,6 +1197,134 @@ mod tests {
     }
 
     #[test]
+    fn ui_actions_map_to_commands_in_preview() {
+        let p = CorrectionPhase::Preview;
+        assert_eq!(
+            decide(&p, SessionInput::Ui(UiAction::Apply), 6, &[]),
+            SessionCommand::Apply
+        );
+        assert_eq!(
+            decide(&p, SessionInput::Ui(UiAction::Copy), 6, &[]),
+            SessionCommand::Copy
+        );
+        assert_eq!(
+            decide(&p, SessionInput::CopyKey, 6, &[]),
+            SessionCommand::Copy
+        );
+        assert_eq!(
+            decide(&p, SessionInput::Ui(UiAction::Tone(3)), 6, &[]),
+            SessionCommand::Regenerate(2)
+        );
+        assert_eq!(
+            decide(&p, SessionInput::Ui(UiAction::Tone(9)), 6, &[]),
+            SessionCommand::Ignore
+        );
+        assert_eq!(
+            decide(
+                &p,
+                SessionInput::Ui(UiAction::View(CorrectionView::Original)),
+                6,
+                &[]
+            ),
+            SessionCommand::SetView(CorrectionView::Original)
+        );
+    }
+
+    #[test]
+    fn copy_apply_and_view_buttons_do_nothing_outside_the_preview() {
+        for p in [
+            CorrectionPhase::Loading,
+            CorrectionPhase::Generating,
+            CorrectionPhase::NeedsFallback,
+            CorrectionPhase::Applied,
+        ] {
+            for i in [
+                SessionInput::CopyKey,
+                SessionInput::Ui(UiAction::Copy),
+                SessionInput::Ui(UiAction::Apply),
+                SessionInput::Ui(UiAction::View(CorrectionView::Changes)),
+            ] {
+                assert_eq!(
+                    decide(&p, i, 6, &[FallbackOption::Cpu]),
+                    SessionCommand::Ignore
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tone_click_picks_the_fallback_option_like_the_digit() {
+        let opts = [FallbackOption::Cloud, FallbackOption::Cpu];
+        let p = CorrectionPhase::NeedsFallback;
+        assert_eq!(
+            decide(&p, SessionInput::Ui(UiAction::Tone(2)), 2, &opts),
+            SessionCommand::UseFallback(FallbackOption::Cpu)
+        );
+        assert_eq!(
+            decide(&p, SessionInput::Ui(UiAction::Tone(3)), 2, &opts),
+            SessionCommand::Ignore
+        );
+    }
+
+    #[test]
+    fn shortcut_again_or_cancel_button_closes_any_open_phase() {
+        for p in [
+            CorrectionPhase::Loading,
+            CorrectionPhase::Generating,
+            CorrectionPhase::Preview,
+            CorrectionPhase::NeedsFallback,
+        ] {
+            assert_eq!(
+                decide(&p, SessionInput::Shortcut, 6, &[FallbackOption::Cpu]),
+                SessionCommand::Cancel
+            );
+            assert_eq!(
+                decide(
+                    &p,
+                    SessionInput::Ui(UiAction::Cancel),
+                    6,
+                    &[FallbackOption::Cpu]
+                ),
+                SessionCommand::Cancel
+            );
+        }
+    }
+
+    #[test]
+    fn copy_key_only_bound_in_preview() {
+        for p in [
+            CorrectionPhase::Loading,
+            CorrectionPhase::Generating,
+            CorrectionPhase::NeedsFallback,
+            CorrectionPhase::Applied,
+            CorrectionPhase::Copied,
+            CorrectionPhase::Error,
+            CorrectionPhase::Hidden,
+        ] {
+            assert!(!wanted_bindings(&p, 4)
+                .iter()
+                .any(|b| b == "correction_copy"));
+        }
+        assert!(wanted_bindings(&CorrectionPhase::Preview, 4)
+            .iter()
+            .any(|b| b == "correction_copy"));
+        assert_eq!(binding_key("correction_copy").as_deref(), Some("ctrl+c"));
+        assert_eq!(
+            input_for_binding("correction_copy"),
+            Some(SessionInput::CopyKey)
+        );
+        assert!(TEMPORARY_BINDING_IDS.contains(&"correction_copy"));
+    }
+
+    #[test]
+    fn shortcut_pressed_with_an_open_session_closes_it() {
+        assert_eq!(shortcut_route(false, true), ShortcutRoute::Close);
+        assert_eq!(shortcut_route(true, true), ShortcutRoute::Close);
+        assert_eq!(shortcut_route(false, false), ShortcutRoute::Start);
+        assert_eq!(shortcut_route(true, false), ShortcutRoute::Ignore);
+    }
+
+    #[test]
     fn ignores_shortcut_during_dictation_or_another_correction() {
         assert!(should_start(false, false));
         assert!(!should_start(true, false));
@@ -1128,12 +1370,13 @@ mod tests {
                 "correction_tone_2",
                 "correction_view",
                 "correction_scroll_up",
-                "correction_scroll_down"
+                "correction_scroll_down",
+                "correction_copy"
             ]
         );
         assert_eq!(
             wanted_bindings(&CorrectionPhase::Preview, 12).len(),
-            2 + 9 + 3
+            2 + 9 + 3 + 1
         );
         assert_eq!(
             wanted_bindings(&CorrectionPhase::NeedsFallback, 1),

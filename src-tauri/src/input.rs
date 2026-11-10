@@ -233,6 +233,36 @@ pub fn send_copy_ctrl_c(enigo: &mut Enigo, hold_ms: u64) -> Result<(), String> {
     click
 }
 
+/// Sends a Ctrl+A or Cmd+A select-all command. Used to take the whole text of
+/// the focused box when the user has nothing selected.
+///
+/// `hold_ms` is how long the modifier stays held after the A click, as in
+/// `send_copy_ctrl_c`.
+pub fn send_select_all_ctrl_a(enigo: &mut Enigo, hold_ms: u64) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let (modifier_key, a_key_code) = (Key::Meta, Key::Other(0)); // kVK_ANSI_A
+    #[cfg(target_os = "windows")]
+    let (modifier_key, a_key_code) = (Key::Control, Key::Other(0x41)); // VK_A
+    #[cfg(target_os = "linux")]
+    let (modifier_key, a_key_code) = (Key::Control, Key::Unicode('a'));
+
+    enigo
+        .key(modifier_key, enigo::Direction::Press)
+        .map_err(|e| format!("Failed to press modifier key: {}", e))?;
+    // Release the modifier even if the A click fails, so it is never left held.
+    let click = enigo
+        .key(a_key_code, enigo::Direction::Click)
+        .map_err(|e| format!("Failed to click A key: {}", e));
+
+    std::thread::sleep(std::time::Duration::from_millis(hold_ms));
+
+    enigo
+        .key(modifier_key, enigo::Direction::Release)
+        .map_err(|e| format!("Failed to release modifier key: {}", e))?;
+
+    click
+}
+
 /// Sends a Ctrl+Shift+V paste command.
 /// This is commonly used in terminal applications on Linux to paste without formatting.
 /// Note: On Wayland, this may not work - callers should check for Wayland and use alternative methods.

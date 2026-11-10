@@ -13,12 +13,32 @@ const COPY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const COPY_TIMEOUT: Duration = Duration::from_millis(1000);
 const LATE_WRITE_GRACE: Duration = Duration::from_millis(300);
 const COPY_HOLD_MS: u64 = 50;
+const SELECT_ALL_SETTLE: Duration = Duration::from_millis(60);
 
 /// The selected text and the window it came from.
 pub struct Captured {
     pub text: String,
     /// Foreground window at capture time; 0 when unknown (non-Windows).
     pub hwnd: isize,
+    /// True when nothing was selected and the whole text box was taken with
+    /// Ctrl+A; the box is still fully selected afterwards.
+    pub whole_field: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CaptureStep {
+    Done,
+    TrySelectAll,
+}
+
+/// Decides what follows the first copy: an empty result means nothing was
+/// selected, so the whole box is selected and copied instead.
+fn after_first_copy(first: &str) -> CaptureStep {
+    if is_blank_selection(first) {
+        CaptureStep::TrySelectAll
+    } else {
+        CaptureStep::Done
+    }
 }
 
 #[derive(Debug)]
@@ -116,17 +136,25 @@ pub fn capture_selection(app: &AppHandle) -> Result<Captured, CaptureError> {
     }
 
     // A dictation paste uses the clipboard the same way; never interleave.
-    let text = with_paste_lock(|| copy_and_restore(app))?;
+    let (text, whole_field) = with_paste_lock(|| copy_and_restore(app))?;
     if is_blank_selection(&text) {
         return Err(CaptureError::NothingSelected);
     }
-    debug!("Captured {} chars of selection", text.chars().count());
-    Ok(Captured { text, hwnd })
+    debug!(
+        "Captured {} chars (whole field: {whole_field})",
+        text.chars().count()
+    );
+    Ok(Captured {
+        text,
+        hwnd,
+        whole_field,
+    })
 }
 
 /// Saves the clipboard, copies the selection and restores the clipboard.
-/// Returns an empty string when nothing was copied.
-fn copy_and_restore(app: &AppHandle) -> Result<String, CaptureError> {
+/// Returns the text and whether it came from selecting the whole box; the text
+/// is empty when nothing was copied.
+fn copy_and_restore(app: &AppHandle) -> Result<(String, bool), CaptureError> {
     let clipboard = app.clipboard();
     let saved_text = clipboard.read_text().ok().filter(|t| !t.is_empty());
     // Same as paste_via_clipboard: decoding an image is only worth it when
@@ -151,10 +179,25 @@ fn copy_and_restore(app: &AppHandle) -> Result<String, CaptureError> {
         }
     };
 
-    let copied = copy_selection(app);
+    let mut whole_field = false;
+    let copied = copy_selection(app).and_then(|first| {
+        if after_first_copy(&first) == CaptureStep::Done {
+            return Ok(first);
+        }
+        // Nothing selected: take the whole box.
+        whole_field = true;
+        with_enigo(app, |enigo| {
+            input::send_select_all_ctrl_a(enigo, COPY_HOLD_MS)
+        })?;
+        std::thread::sleep(SELECT_ALL_SETTLE);
+        copy_selection(app)
+    });
     restore();
 
     let text = copied.map_err(CaptureError::Clipboard)?;
+    if text.is_empty() {
+        whole_field = false;
+    }
     if text.is_empty() {
         // Timed out: a slow app may still write the selection after our restore.
         let after_restore = clipboard_sequence();
@@ -164,7 +207,7 @@ fn copy_and_restore(app: &AppHandle) -> Result<String, CaptureError> {
             restore();
         }
     }
-    Ok(text)
+    Ok((text, whole_field))
 }
 
 /// Clears the clipboard, sends Ctrl+C and polls for the copied text. Returns an
@@ -243,6 +286,13 @@ pub fn refocus(_hwnd: isize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_first_copy_tries_select_all() {
+        assert_eq!(after_first_copy(""), CaptureStep::TrySelectAll);
+        assert_eq!(after_first_copy("  \n"), CaptureStep::TrySelectAll);
+        assert_eq!(after_first_copy("oi"), CaptureStep::Done);
+    }
 
     #[test]
     fn whitespace_only_selection_counts_as_nothing() {

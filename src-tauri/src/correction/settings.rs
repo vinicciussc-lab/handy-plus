@@ -11,7 +11,7 @@ use tauri_plugin_store::StoreExt;
 pub const CORRECTION_STORE_PATH: &str = "correction_store.json";
 const CORRECTION_STORE_KEY: &str = "correction_settings";
 /// Bump when new default tones should be offered once to existing users.
-pub const CURRENT_DEFAULTS_VERSION: u32 = 4;
+pub const CURRENT_DEFAULTS_VERSION: u32 = 5;
 /// Limit of tones of each kind (styles and adjustments are counted apart).
 const MAX_PER_KIND: usize = 9;
 
@@ -100,19 +100,20 @@ fn zero_defaults_version() -> u32 {
 
 const DESENVOLVER_GOAL: &str = "Desenvolva o texto de verdade: para cada ideia principal, escreva pelo menos uma frase a mais explicando o porquê ou dando um exemplo que o próprio texto já sugere, e ligue as ideias com conectivos simples. O resultado deve ficar com mais ou menos o dobro do tamanho do texto corrigido. Organize em parágrafos se ficar longo. Mantenha o jeito de falar do usuário e a mesma opinião. Não invente fatos específicos, como números, nomes ou datas, que não estavam no texto.";
 
-const TRADUZIR_GOAL: &str = "Traduza o texto. Se ele estiver em português, traduza para o inglês; se já estiver em inglês, traduza para o português do Brasil. Use uma tradução natural, como uma pessoa nativa escreveria, mantendo o mesmo tom, o mesmo nível de formalidade e as mesmas ideias. Não explique a tradução. Esta tarefa é uma tradução, não uma correção, e é a exceção às regras acima sobre o idioma: se o texto estiver em português, a resposta tem que ser escrita inteira em inglês (English), sem nenhuma palavra em português; se estiver em inglês, a resposta tem que ser escrita inteira em português do Brasil. Nunca devolva o texto no mesmo idioma em que ele chegou.";
+/// Goal of the Traduzir adjustment (versions 3 and 4), replaced in version 5
+/// by the PT / EN switch. Kept only to recognize an untouched copy.
+const OLD_TRADUZIR_GOAL: &str = "Traduza o texto. Se ele estiver em português, traduza para o inglês; se já estiver em inglês, traduza para o português do Brasil. Use uma tradução natural, como uma pessoa nativa escreveria, mantendo o mesmo tom, o mesmo nível de formalidade e as mesmas ideias. Não explique a tradução. Esta tarefa é uma tradução, não uma correção, e é a exceção às regras acima sobre o idioma: se o texto estiver em português, a resposta tem que ser escrita inteira em inglês (English), sem nenhuma palavra em português; se estiver em inglês, a resposta tem que ser escrita inteira em português do Brasil. Nunca devolva o texto no mesmo idioma em que ele chegou.";
 
 const DESCOLADO_GOAL: &str = "Reescreva como se fosse uma mensagem de WhatsApp para um amigo próximo: bem informal e solto, não um texto corrigido. Troque as palavras mais certinhas por versões coloquiais do dia a dia (\"tá\", \"pra\", \"pro\", \"né\", \"cara\", \"massa\", \"de boa\", \"sinceramente\", \"bora\", \"tipo\") em pelo menos três lugares, quebre em frases curtas e diretas, e coloque uma interjeição ou exclamação leve (como \"olha\", \"cara\" ou \"poxa\") onde combinar. Corrija a ortografia, mantenha as mesmas ideias e a opinião do usuário e não invente fatos.";
 
 const POETICO_GOAL: &str = "Reescreva com um toque poético: escolha imagens e comparações bonitas, cuide do ritmo das frases e deixe o texto mais expressivo, sem perder o sentido nem inventar fatos. Nada de rimas forçadas.";
 
 /// Tones added after the first release: (defaults version that introduced it, id).
-const TONES_ADDED_BY_VERSION: [(u32, &str); 4] = [
-    (2, "desenvolver"),
-    (3, "traduzir"),
-    (4, "descolado"),
-    (4, "poetico"),
-];
+/// Traduzir (version 3) is not here: version 5 dropped it.
+const TONES_ADDED_BY_VERSION: [(u32, &str); 3] =
+    [(2, "desenvolver"), (4, "descolado"), (4, "poetico")];
+
+const TRANSLATE_ID: &str = "traduzir";
 
 /// Ids whose tone is an adjustment (version 4 split tones into two kinds).
 const ADJUST_IDS: [&str; 4] = [
@@ -158,7 +159,6 @@ pub fn default_tones() -> Vec<CorrectionTone> {
             Adjust,
         ),
         tone("desenvolver", "Desenvolver", DESENVOLVER_GOAL, Adjust),
-        tone("traduzir", "Traduzir", TRADUZIR_GOAL, Adjust),
         tone(
             "melhorar_argumentos",
             "Melhorar argumentos",
@@ -176,6 +176,7 @@ const OLD_TONE_GOALS_V1: [(&str, &str, &str); 4] = [
         ("melhorar_argumentos", "Melhorar argumentos", "Corrija o texto e deixe os argumentos mais claros e convincentes, na ordem mais lógica, sem inventar fatos."),
 ];
 
+#[cfg(test)]
 fn old_tones_v1() -> Vec<CorrectionTone> {
     OLD_TONE_GOALS_V1
         .iter()
@@ -242,6 +243,12 @@ pub fn migrate_defaults(s: &mut CorrectionSettings) -> bool {
                 .rposition(|t| t.kind == tone.kind)
                 .map_or(s.tones.len(), |i| i + 1);
             s.tones.insert(at, tone.clone());
+        }
+        if from < 5 {
+            // The PT / EN switch replaces Traduzir; an edited copy stays as a
+            // plain adjustment.
+            s.tones
+                .retain(|t| !(t.id == TRANSLATE_ID && t.goal == OLD_TRADUZIR_GOAL));
         }
         s.defaults_version = CURRENT_DEFAULTS_VERSION;
         changed = true;
@@ -372,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn default_tones_are_four_styles_then_four_adjustments() {
+    fn default_tones_are_four_styles_then_three_adjustments() {
         let t = default_tones();
         assert_eq!(
             names(&t),
@@ -383,7 +390,6 @@ mod tests {
                 "Poético",
                 "Encurtar",
                 "Desenvolver",
-                "Traduzir",
                 "Melhorar argumentos"
             ]
         );
@@ -397,7 +403,6 @@ mod tests {
                 "poetico",
                 "mais_curto",
                 "desenvolver",
-                "traduzir",
                 "melhorar_argumentos"
             ]
         );
@@ -413,7 +418,6 @@ mod tests {
             .starts_with("Reescreva como se fosse uma mensagem de WhatsApp"));
         assert!(t[3].goal.starts_with("Reescreva com um toque poético"));
         assert!(t[3].goal.ends_with("Nada de rimas forçadas."));
-        assert!(t[6].goal.starts_with("Traduza o texto."));
     }
 
     #[test]
@@ -435,14 +439,9 @@ mod tests {
             ..Default::default()
         };
         assert!(migrate_defaults(&mut s));
-        assert_eq!(s.defaults_version, 4);
+        assert_eq!(s.defaults_version, 5);
         let kind = |id: &str| s.tones.iter().find(|t| t.id == id).unwrap().kind;
-        for id in [
-            "mais_curto",
-            "desenvolver",
-            "traduzir",
-            "melhorar_argumentos",
-        ] {
+        for id in ["mais_curto", "desenvolver", "melhorar_argumentos"] {
             assert_eq!(kind(id), ToneKind::Adjust, "{id}");
         }
         for id in ["meu_estilo", "mais_formal", "descolado", "poetico"] {
@@ -457,7 +456,6 @@ mod tests {
                 "Poético",
                 "Encurtar",
                 "Desenvolver",
-                "Traduzir",
                 "Melhorar argumentos"
             ]
         );
@@ -465,7 +463,7 @@ mod tests {
         assert!(!migrate_defaults(&mut s));
         s.tones.retain(|t| t.id != "descolado");
         assert!(!migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 7);
+        assert_eq!(s.tones.len(), 6);
     }
 
     #[test]
@@ -510,25 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn v2_store_gets_traduzir_once() {
-        let mut s = CorrectionSettings {
-            tones: default_tones()
-                .into_iter()
-                .filter(|t| t.id != "traduzir" && t.id != "descolado" && t.id != "poetico")
-                .collect(),
-            defaults_version: 2,
-            ..Default::default()
-        };
-        assert!(migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 8);
-        assert!(s.tones.iter().any(|t| t.id == "traduzir"));
-        assert_eq!(s.defaults_version, 4);
-        s.tones.retain(|t| t.id != "traduzir");
-        assert!(!migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 7);
-    }
-
-    #[test]
     fn old_store_gets_the_new_tones_once() {
         let mut s = CorrectionSettings {
             tones: old_tones_v1(),
@@ -536,12 +515,12 @@ mod tests {
             ..Default::default()
         };
         assert!(migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 8);
-        assert_eq!(s.defaults_version, 4);
+        assert_eq!(s.tones.len(), 7);
+        assert_eq!(s.defaults_version, 5);
         s.tones.pop();
         s.tones.pop();
         assert!(!migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 6);
+        assert_eq!(s.tones.len(), 5);
     }
 
     #[test]
@@ -560,7 +539,7 @@ mod tests {
         let styles = s.tones.iter().filter(|t| t.kind == ToneKind::Style).count();
         assert_eq!(styles, 9);
         assert!(!s.tones.iter().any(|t| t.id == "descolado"));
-        assert_eq!(s.defaults_version, 4);
+        assert_eq!(s.defaults_version, 5);
 
         // Nine adjustments do not block the new styles.
         let mut tones: Vec<_> = (0..9)
@@ -627,7 +606,7 @@ mod tests {
     fn settings_missing_fields_fall_back_to_defaults() {
         let s: CorrectionSettings = serde_json::from_str(r#"{"models_dir":"E:\\m"}"#).unwrap();
         assert_eq!(s.models_dir, r"E:\m");
-        assert_eq!(s.tones.len(), 8);
+        assert_eq!(s.tones.len(), 7);
     }
 
     #[test]
@@ -734,13 +713,13 @@ mod tests {
     #[test]
     fn new_defaults_keep_the_dash_rule_and_restructure_tone() {
         assert!(DEFAULT_STYLE_RULES.contains("NUNCA use travessão"));
-        assert!(default_tones()[7].goal.contains("Reorganize"));
+        assert!(default_tones()[6].goal.contains("Reorganize"));
     }
 
     #[test]
     fn non_object_value_falls_back_to_defaults() {
         let s = parse_or_salvage(&serde_json::json!(42));
-        assert_eq!(s.tones.len(), 8);
+        assert_eq!(s.tones.len(), 7);
     }
 
     #[test]
@@ -785,5 +764,92 @@ mod tests {
             "unload_timeout": "nope",
         });
         assert_eq!(parse_or_salvage(&v).models_dir, r"E:\m");
+    }
+
+    /// A store as version 4 left it: the defaults with Traduzir among the adjustments.
+    fn v4_store() -> CorrectionSettings {
+        let mut tones = default_tones();
+        let at = tones.iter().position(|t| t.id == "desenvolver").unwrap() + 1;
+        tones.insert(
+            at,
+            CorrectionTone {
+                id: "traduzir".into(),
+                name: "Traduzir".into(),
+                goal: OLD_TRADUZIR_GOAL.into(),
+                kind: ToneKind::Adjust,
+            },
+        );
+        CorrectionSettings {
+            tones,
+            defaults_version: 4,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn v5_removes_the_untouched_traduzir_adjustment() {
+        let mut s = v4_store();
+        assert!(migrate_defaults(&mut s));
+        assert_eq!(s.defaults_version, 5);
+        assert!(!s.tones.iter().any(|t| t.id == "traduzir"));
+        assert_eq!(s.tones, default_tones());
+        // Idempotent.
+        assert!(!migrate_defaults(&mut s));
+        assert_eq!(s.tones, default_tones());
+    }
+
+    #[test]
+    fn v5_keeps_an_edited_traduzir_as_a_plain_adjustment() {
+        let mut s = v4_store();
+        let t = s.tones.iter_mut().find(|t| t.id == "traduzir").unwrap();
+        t.goal = "Traduza para o espanhol.".into();
+        let edited = t.clone();
+        assert!(migrate_defaults(&mut s));
+        assert_eq!(s.defaults_version, 5);
+        let kept = s.tones.iter().find(|t| t.id == "traduzir").unwrap();
+        assert_eq!(kept, &edited);
+        assert_eq!(kept.kind, ToneKind::Adjust);
+        assert!(!migrate_defaults(&mut s));
+        assert_eq!(s.tones.len(), 8);
+    }
+
+    #[test]
+    fn v5_removes_the_default_goal_even_if_renamed() {
+        let mut s = v4_store();
+        s.tones
+            .iter_mut()
+            .find(|t| t.id == "traduzir")
+            .unwrap()
+            .name = "Inglês".into();
+        assert!(migrate_defaults(&mut s));
+        assert!(!s.tones.iter().any(|t| t.id == "traduzir"));
+    }
+
+    #[test]
+    fn older_stores_never_get_traduzir_any_more() {
+        let mut s = CorrectionSettings {
+            tones: default_tones()
+                .into_iter()
+                .filter(|t| t.id != "descolado" && t.id != "poetico")
+                .collect(),
+            defaults_version: 2,
+            ..Default::default()
+        };
+        assert!(migrate_defaults(&mut s));
+        assert_eq!(s.defaults_version, 5);
+        assert!(!s.tones.iter().any(|t| t.id == "traduzir"));
+        assert_eq!(s.tones.len(), 7);
+    }
+
+    #[test]
+    fn store_without_traduzir_at_v4_only_moves_the_version() {
+        let mut s = CorrectionSettings {
+            tones: default_tones(),
+            defaults_version: 4,
+            ..Default::default()
+        };
+        assert!(migrate_defaults(&mut s));
+        assert_eq!(s.tones, default_tones());
+        assert_eq!(s.defaults_version, 5);
     }
 }

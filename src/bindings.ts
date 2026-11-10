@@ -1301,7 +1301,15 @@ scroll_nonce: number;
 /**
  * Direction of the last scroll: -1 up, 1 down, 0 none yet.
  */
-scroll_dir: number }
+scroll_dir: number; 
+/**
+ * The language of the text shown (the PT / EN switch).
+ */
+lang: Lang; 
+/**
+ * The language of the original text.
+ */
+source_lang: Lang }
 /**
  * Which text the preview shows; Tab toggles between them.
  */
@@ -1352,6 +1360,10 @@ export type KeyboardImplementation = "tauri" | "handy_keys" |
  */
 "none"
 export type LLMPrompt = { id: string; name: string; prompt: string }
+/**
+ * The language of a text on the panel's PT / EN switch.
+ */
+export type Lang = "pt" | "en"
 /**
  * When Handy's spoken-language detector picks the language for Auto.
  */
@@ -1669,7 +1681,11 @@ export type UiAction = { kind: "apply" } | { kind: "copy" } | { kind: "cancel" }
 /**
  * 1-based, like the digit keys.
  */
-{ kind: "tone"; value: number } | { kind: "view"; value: CorrectionView }
+{ kind: "tone"; value: number } | { kind: "view"; value: CorrectionView } | 
+/**
+ * The PT / EN switch.
+ */
+{ kind: "toggle_lang" }
 export type VadBackend = "silero" | "earshot"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }
 

@@ -47,11 +47,12 @@ pub fn click_outside(x: i32, y: i32, panel: (i32, i32, i32, i32)) -> bool {
     !(x >= left && x < right && y >= top && y < bottom)
 }
 
-/// Virtual-key code of a temporary binding's key ("1".."9" today), so a digit
-/// the panel listens to is not taken as typing.
+/// Virtual-key code of a temporary binding's key (a digit or a letter, such
+/// as "1".."9" and "t"), so a key the panel listens to is not taken as typing.
 pub fn binding_vk(key: &str) -> Option<u32> {
     match key.as_bytes() {
         [d @ b'0'..=b'9'] => Some(u32::from(*d)),
+        [c @ b'a'..=b'z'] => Some(u32::from(c.to_ascii_uppercase())),
         _ => None,
     }
 }
@@ -337,6 +338,9 @@ mod tests {
     fn binding_keys_map_to_vk() {
         assert_eq!(binding_vk("1"), Some(0x31));
         assert_eq!(binding_vk("9"), Some(0x39));
+        assert_eq!(binding_vk("t"), Some(0x54));
+        assert_eq!(binding_vk("a"), Some(0x41));
+        assert_eq!(binding_vk("T"), None);
         assert_eq!(binding_vk("escape"), None);
         assert_eq!(binding_vk("ctrl+c"), None);
     }

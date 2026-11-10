@@ -162,6 +162,7 @@
 .cor-viewbar {
   flex: none;
   display: flex;
+  align-items: center;
   gap: 4px;
   margin-bottom: 12px;
   font-size: 12px;
@@ -182,6 +183,44 @@
   background: var(--s-hair);
   color: var(--color-text);
   font-weight: 600;
+}
+.cor-topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.cor-topbar .cor-choose {
+  margin-bottom: 0;
+}
+/* PT / EN switch, at the right of the top bar. */
+.cor-lang {
+  margin-left: auto;
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--s-border);
+  border-radius: 999px;
+  font-size: 11px;
+}
+.cor-lang-opt {
+  padding: 1px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--s-faint);
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.cor-lang-opt:hover:not(.on) {
+  color: var(--s-muted);
+}
+.cor-lang-opt.on {
+  background: var(--s-hair);
+  color: var(--color-text);
+  cursor: default;
 }
 .cor-text {
   font-size: 15px;

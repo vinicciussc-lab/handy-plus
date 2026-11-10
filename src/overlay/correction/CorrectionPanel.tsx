@@ -6,6 +6,7 @@ import type {
   CorrectionUpdateEvent,
   CorrectionView,
   FallbackOption,
+  Lang,
   UiAction,
 } from "@/bindings";
 import i18n from "@/i18n";
@@ -39,6 +40,12 @@ const VIEW_KEYS: Record<CorrectionView, string> = {
   original: "overlay.correction.viewOriginal",
 };
 const VIEWS: CorrectionView[] = ["corrected", "original"];
+
+const LANG_KEYS: Record<Lang, string> = {
+  pt: "overlay.correction.langPt",
+  en: "overlay.correction.langEn",
+};
+const LANGS: Lang[] = ["pt", "en"];
 
 // Three lines of the 15px / 1.5 text per arrow key press.
 const SCROLL_STEP = 3 * 15 * 1.5;
@@ -122,6 +129,33 @@ const PanelButton: React.FC<ButtonProps> = ({
   >
     {label}
   </button>
+);
+
+interface LangSwitchProps {
+  lang: Lang;
+  labels: Record<Lang, string>;
+  title: string;
+}
+
+// PT / EN: the side on is the language shown; a click on the other side
+// translates (same as T).
+const LangSwitch: React.FC<LangSwitchProps> = ({ lang, labels, title }) => (
+  <div className="cor-lang" title={title}>
+    {LANGS.map((l) => (
+      <button
+        type="button"
+        tabIndex={-1}
+        key={l}
+        className={`cor-lang-opt ${l === lang ? "on" : ""}`}
+        onMouseDown={noFocus}
+        onClick={() => {
+          if (l !== lang) sendAction({ kind: "toggle_lang" });
+        }}
+      >
+        {labels[l]}
+      </button>
+    ))}
+  </div>
 );
 
 const keyHint = (label: string, text: string) => (
@@ -225,6 +259,19 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
       )}
     </div>
   );
+  const langSwitch = (
+    <LangSwitch
+      lang={update.lang}
+      labels={{ pt: t(LANG_KEYS.pt), en: t(LANG_KEYS.en) }}
+      title={t("overlay.correction.langTip")}
+    />
+  );
+  const langHint = (
+    <>
+      {" · "}
+      {keyHint("T", t("overlay.correction.language"))}
+    </>
+  );
   const pickHint = options.length > 1 && (
     <>
       {" · "}
@@ -250,11 +297,13 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
               </span>
             </div>
           )}
-          {styles.length > 0 && (
+          <div className="cor-topbar">
             <div className="cor-choose">
-              {t("overlay.correction.chooseStyle", { name: styles[0] })}
+              {styles.length > 0 &&
+                t("overlay.correction.chooseStyle", { name: styles[0] })}
             </div>
-          )}
+            {langSwitch}
+          </div>
           <div className="cor-grid">
             <div
               className="cor-text cor-scroll"
@@ -275,6 +324,7 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
           <div className="cor-hint">
             {keyHint("↑↓", t("overlay.correction.scroll"))}
             {pickHint}
+            {langHint}
             {" · "}
             {keyHint("Esc", t("overlay.correction.cancel"))}
           </div>
@@ -356,6 +406,7 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
                 {t(VIEW_KEYS[v])}
               </button>
             ))}
+            {langSwitch}
           </div>
           <div className="cor-grid">
             <div
@@ -393,6 +444,7 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
             {" · "}
             {keyHint("↑↓", t("overlay.correction.scroll"))}
             {pickHint}
+            {langHint}
             {" · "}
             {keyHint("Ctrl + C", t("overlay.correction.copy"))}
             {" · "}
@@ -403,9 +455,11 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
       pill = (
         <>
           <span className="cor-ok">{CHECK}</span>{" "}
-          {t("overlay.correction.ready", {
-            s: formatSeconds(update.elapsed_ms ?? 0),
-          })}
+          {update.elapsed_ms == null
+            ? t("overlay.correction.readyNow")
+            : t("overlay.correction.ready", {
+                s: formatSeconds(update.elapsed_ms),
+              })}
         </>
       );
       break;

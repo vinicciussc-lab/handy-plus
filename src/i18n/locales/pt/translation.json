@@ -1115,7 +1115,12 @@
       "styleGroup": "Estilo",
       "adjustGroup": "Ajustes",
       "chooseStyle": "Escolha um estilo (Enter = {{name}})",
-      "againHint": "Clique de novo na opção marcada para outra versão"
+      "againHint": "Escolha de novo a opção marcada para outra versão",
+      "language": "idioma",
+      "langPt": "PT",
+      "langEn": "EN",
+      "langTip": "Mostra o texto em português ou em inglês (T)",
+      "readyNow": "Pronto"
     },
     "typingHint": {
       "text": "para melhorar o texto"

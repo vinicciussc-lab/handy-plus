@@ -8,9 +8,11 @@
 //! each pick into the overlay panel via [`CorrectionUpdateEvent`] and waits
 //! for Enter, a digit or Esc, which arrive through temporary global shortcuts.
 //! A style processes the original; an adjustment works on the current
-//! style's result, one adjustment at a time. Every result stays in memory
-//! while the panel is open, so going back to it shows it at once; picking the
-//! option already shown asks for a new variation (see [`plan_choice`]).
+//! style's result, one adjustment at a time. The PT / EN switch shows the
+//! same result in the other language (a translation of it). Every result
+//! stays in memory while the panel is open, so going back to it shows it at
+//! once; picking the option already shown asks for a new variation (see
+//! [`plan_choice`]).
 
 use super::input_hooks::{self, binding_vk, click_outside, HookEvent};
 use super::local_engine::{EngineError, LocalEngine};
@@ -20,7 +22,10 @@ use super::settings::{
     CorrectionProvider, CorrectionSettings, CorrectionTone, ToneKind,
 };
 use super::stream::{stream_chat, ChatTarget};
-use super::text::{build_messages, clean_output, generation_progress, load_progress};
+use super::text::{
+    build_messages, clean_output, detect_lang, generation_progress, load_progress, translate_goal,
+    Lang,
+};
 use super::{gpu_guard, text::MAX_CORRECTION_CHARS};
 use crate::actions::ShortcutAction;
 use crate::managers::audio::AudioRecordingManager;
@@ -59,9 +64,6 @@ const CHOICE_TIMEOUT: Duration = Duration::from_secs(300);
 const WARMUP_SYSTEM: &str = "Responda só OK.";
 const WARMUP_USER: &str = "oi";
 
-/// Id of the built-in translation adjustment.
-const TRANSLATE_ID: &str = "traduzir";
-
 const CANCEL_ID: &str = "correction_cancel";
 const APPLY_ID: &str = "correction_apply";
 const TONE_PREFIX: &str = "correction_tone_";
@@ -69,6 +71,7 @@ const VIEW_ID: &str = "correction_view";
 const SCROLL_UP_ID: &str = "correction_scroll_up";
 const SCROLL_DOWN_ID: &str = "correction_scroll_down";
 const COPY_ID: &str = "correction_copy";
+const LANG_ID: &str = "correction_lang";
 /// Temporary shortcuts, registered only while a session needs them. They are
 /// not in `AppSettings.bindings`, so they never show on the shortcuts screen
 /// and startup/suspend/resume never touch them.
@@ -79,6 +82,7 @@ pub const TEMPORARY_BINDING_IDS: &[&str] = &[
     SCROLL_UP_ID,
     SCROLL_DOWN_ID,
     COPY_ID,
+    LANG_ID,
     "correction_tone_1",
     "correction_tone_2",
     "correction_tone_3",
@@ -176,6 +180,10 @@ pub struct CorrectionUpdateEvent {
     pub scroll_nonce: u32,
     /// Direction of the last scroll: -1 up, 1 down, 0 none yet.
     pub scroll_dir: i8,
+    /// The language of the text shown (the PT / EN switch).
+    pub lang: Lang,
+    /// The language of the original text.
+    pub source_lang: Lang,
 }
 
 impl CorrectionUpdateEvent {
@@ -198,6 +206,8 @@ impl CorrectionUpdateEvent {
             view: CorrectionView::Corrected,
             scroll_nonce: 0,
             scroll_dir: 0,
+            lang: Lang::Pt,
+            source_lang: Lang::Pt,
         }
     }
 }
@@ -212,6 +222,8 @@ pub enum SessionInput {
     ScrollDown,
     /// Ctrl+C in the preview.
     CopyKey,
+    /// T: the PT / EN switch.
+    ToggleLang,
     /// The correction shortcut pressed again while a session is open.
     Shortcut,
     /// A click in the panel.
@@ -230,6 +242,8 @@ pub enum UiAction {
     /// 1-based, like the digit keys.
     Tone(u8),
     View(CorrectionView),
+    /// The PT / EN switch.
+    ToggleLang,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -249,6 +263,8 @@ pub enum SessionCommand {
     Copy,
     /// -1 up, 1 down.
     Scroll(i8),
+    /// Show the current result in the other language.
+    ToggleLang,
     Ignore,
 }
 
@@ -303,6 +319,10 @@ pub fn decide(
             pick(usize::from(d))
         }
         (P::Choosing | P::Preview, SessionInput::Ui(UiAction::Tone(n))) => pick(usize::from(n)),
+        (
+            P::Choosing | P::Preview,
+            SessionInput::ToggleLang | SessionInput::Ui(UiAction::ToggleLang),
+        ) => SessionCommand::ToggleLang,
         (P::NeedsFallback, SessionInput::Enter) => {
             fallback.first().map_or(SessionCommand::Ignore, |o| {
                 SessionCommand::UseFallback(o.clone())
@@ -321,15 +341,10 @@ pub fn decide(
     }
 }
 
-/// The language of a result. Only the original's for now.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum Lang {
-    #[default]
-    Original,
-}
-
 /// One combination the user can look at: a style, an adjustment on top of
-/// it, in a language. Each generated text is kept under its key.
+/// it, in a language. Each generated text is kept under its key. A key in the
+/// original's language is generated with its goal; a key in the other language
+/// is the translation of the same combination in the original's language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ResultKey {
     pub style: Option<usize>,
@@ -337,17 +352,20 @@ pub struct ResultKey {
     pub lang: Lang,
 }
 
-/// A style or an adjustment the user picked (index in its own list).
+/// What the user picked: a style or an adjustment (index in its own list),
+/// or the PT / EN switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
     Style(usize),
     Adjust(usize),
+    ToggleLang,
 }
 
 pub fn pick_of(cmd: &SessionCommand) -> Option<Pick> {
     match cmd {
         SessionCommand::RunStyle(i) => Some(Pick::Style(*i)),
         SessionCommand::RunAdjust(i) => Some(Pick::Adjust(*i)),
+        SessionCommand::ToggleLang => Some(Pick::ToggleLang),
         _ => None,
     }
 }
@@ -356,28 +374,71 @@ pub fn pick_of(cmd: &SessionCommand) -> Option<Pick> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Base {
     Original,
-    /// The text shown under this key (the current style's result).
+    /// The text shown under this key.
     Result(ResultKey),
+}
+
+/// One request: generate `key` from the text of `from`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub key: ResultKey,
+    pub from: Base,
 }
 
 /// What a pick does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plan {
-    /// Already generated: show it, no request.
+    /// Already generated (or the original itself): show it, no request.
     Show(ResultKey),
-    /// Not generated yet.
+    /// Not generated yet. In the other language, a translation of `from`.
     Generate { key: ResultKey, from: Base },
     /// The option already shown, picked again: generate it once more and show
     /// the new one.
     NewVariation { key: ResultKey, from: Base },
+    /// A pick while the switch shows the other language: generate `key` (in
+    /// the original's language, anew if it is the marked option) from `from`,
+    /// then translate it into `lang` and show the translation. Both are kept.
+    ThenTranslate {
+        key: ResultKey,
+        from: Base,
+        lang: Lang,
+    },
 }
 
 impl Plan {
+    /// The combination shown once the plan ran.
     pub fn key(&self) -> ResultKey {
         match self {
             Self::Show(key) | Self::Generate { key, .. } | Self::NewVariation { key, .. } => *key,
+            Self::ThenTranslate { key, lang, .. } => ResultKey {
+                lang: *lang,
+                ..*key
+            },
         }
     }
+
+    /// The requests the plan makes, in order; each result is kept.
+    pub fn runs(&self) -> Vec<Run> {
+        match *self {
+            Self::Show(_) => Vec::new(),
+            Self::Generate { key, from } | Self::NewVariation { key, from } => {
+                vec![Run { key, from }]
+            }
+            Self::ThenTranslate { key, from, lang } => vec![
+                Run { key, from },
+                Run {
+                    key: ResultKey { lang, ..key },
+                    from: Base::Result(key),
+                },
+            ],
+        }
+    }
+}
+
+/// The plan makes requests: the preview shows the time it took and plays the
+/// ready sound. A result from memory shows at once, without either.
+pub fn is_fresh(plan: &Plan) -> bool {
+    !matches!(plan, Plan::Show(_))
 }
 
 /// What the session shows and what it already generated. Lives only while
@@ -386,12 +447,24 @@ impl Plan {
 pub struct Choices {
     pub current_style: Option<usize>,
     pub current_adjust: Option<usize>,
+    /// The language on the switch.
     pub lang: Lang,
+    /// The original's language; styles and adjustments run in it.
+    pub source: Lang,
     /// Every text generated per key, oldest first; the last one is shown.
     results: HashMap<ResultKey, Vec<String>>,
 }
 
 impl Choices {
+    /// A session over an original in `source`, with the switch on it.
+    pub fn new(source: Lang) -> Self {
+        Self {
+            lang: source,
+            source,
+            ..Self::default()
+        }
+    }
+
     fn key(&self, style: Option<usize>, adjust: Option<usize>) -> ResultKey {
         ResultKey {
             style,
@@ -400,18 +473,41 @@ impl Choices {
         }
     }
 
+    fn source_key(&self, style: Option<usize>, adjust: Option<usize>) -> ResultKey {
+        ResultKey {
+            style,
+            adjust,
+            lang: self.source,
+        }
+    }
+
+    /// No style, no adjustment, in the original's language: the original.
+    pub fn is_original(&self, key: ResultKey) -> bool {
+        key == self.source_key(None, None)
+    }
+
+    /// The language a run of `key` translates into, if it is a translation.
+    pub fn translation_to(&self, key: ResultKey) -> Option<Lang> {
+        (key.lang != self.source).then_some(key.lang)
+    }
+
     /// The text shown for `key`: its newest variation.
     pub fn latest(&self, key: ResultKey) -> Option<&str> {
         self.results.get(&key)?.last().map(String::as_str)
     }
 
-    /// Keeps a generated text as the newest variation of `key`. A new text for
-    /// a style drops the adjustments made on its previous text: they no longer
-    /// match what the style shows.
+    /// Keeps a generated text as the newest variation of `key`. A new text in
+    /// the original's language drops what was made from its previous text:
+    /// its translation and, for a style, the adjustments made on it.
     pub fn store(&mut self, key: ResultKey, text: String) {
-        if key.adjust.is_none() && key.style.is_some() {
-            self.results
-                .retain(|k, _| !(k.style == key.style && k.lang == key.lang && k.adjust.is_some()));
+        if key.lang == self.source {
+            let style_only = key.style.is_some() && key.adjust.is_none();
+            self.results.retain(|k, _| {
+                let translation =
+                    k.style == key.style && k.adjust == key.adjust && k.lang != key.lang;
+                let adjusted = style_only && k.style == key.style && k.adjust.is_some();
+                !(translation || adjusted)
+            });
         }
         self.results.entry(key).or_default().push(text);
     }
@@ -429,37 +525,101 @@ impl Choices {
             Base::Result(key) => self.latest(*key).unwrap_or(original),
         }
     }
+
+    /// What a combination works on in the original's language: an adjustment
+    /// on a style's result, anything else on the original.
+    fn base_for(&self, style: Option<usize>, adjust: Option<usize>) -> Base {
+        match (style, adjust) {
+            (Some(s), Some(_)) => Base::Result(self.source_key(Some(s), None)),
+            _ => Base::Original,
+        }
+    }
 }
 
 /// Decides what a pick does. A style works on the original and clears the
 /// adjustment; an adjustment works on the current style's result (or on the
-/// original before any style) and replaces the previous adjustment. A
-/// combination already generated shows at once; the option already shown,
-/// picked again, asks for a new variation.
+/// original before any style) and replaces the previous adjustment. Both run
+/// in the original's language; with the switch on the other language, the
+/// result is then translated. The switch shows the current combination in the
+/// other language. A combination already generated shows at once; the option
+/// already shown, picked again, asks for a new variation.
 pub fn plan_choice(state: &Choices, pick: Pick) -> Plan {
-    let (key, from, again) = match pick {
+    let (style, adjust, again) = match pick {
         Pick::Style(s) => (
-            state.key(Some(s), None),
-            Base::Original,
+            Some(s),
+            None,
             state.current_style == Some(s) && state.current_adjust.is_none(),
         ),
-        Pick::Adjust(a) => {
-            let from = state
-                .current_style
-                .map_or(Base::Original, |s| Base::Result(state.key(Some(s), None)));
-            (
-                state.key(state.current_style, Some(a)),
-                from,
-                state.current_adjust == Some(a),
-            )
-        }
+        Pick::Adjust(a) => (
+            state.current_style,
+            Some(a),
+            state.current_adjust == Some(a),
+        ),
+        Pick::ToggleLang => return plan_toggle(state),
     };
-    if again && state.latest(key).is_some() {
-        Plan::NewVariation { key, from }
-    } else if state.latest(key).is_some() {
-        Plan::Show(key)
+    let from = state.base_for(style, adjust);
+    let shown = state.key(style, adjust);
+    let made = state.latest(shown).is_some();
+    if state.lang == state.source {
+        return if again && made {
+            Plan::NewVariation { key: shown, from }
+        } else if made {
+            Plan::Show(shown)
+        } else {
+            Plan::Generate { key: shown, from }
+        };
+    }
+    let source_key = state.source_key(style, adjust);
+    if made && !again {
+        Plan::Show(shown)
+    } else if !again && state.latest(source_key).is_some() {
+        Plan::Generate {
+            key: shown,
+            from: Base::Result(source_key),
+        }
     } else {
-        Plan::Generate { key, from }
+        Plan::ThenTranslate {
+            key: source_key,
+            from,
+            lang: state.lang,
+        }
+    }
+}
+
+/// The switch: the current combination in the other language.
+fn plan_toggle(state: &Choices) -> Plan {
+    let (style, adjust) = (state.current_style, state.current_adjust);
+    let key = ResultKey {
+        lang: state.lang.other(),
+        ..state.key(style, adjust)
+    };
+    if state.latest(key).is_some() || state.is_original(key) {
+        return Plan::Show(key);
+    }
+    let source_key = state.source_key(style, adjust);
+    if key == source_key {
+        // Back to a result that is not kept: make it again.
+        return Plan::Generate {
+            key,
+            from: state.base_for(style, adjust),
+        };
+    }
+    if state.is_original(source_key) {
+        Plan::Generate {
+            key,
+            from: Base::Original,
+        }
+    } else if state.latest(source_key).is_some() {
+        Plan::Generate {
+            key,
+            from: Base::Result(source_key),
+        }
+    } else {
+        Plan::ThenTranslate {
+            key: source_key,
+            from: state.base_for(style, adjust),
+            lang: key.lang,
+        }
     }
 }
 
@@ -467,6 +627,8 @@ pub fn plan_choice(state: &Choices, pick: Pick) -> Plan {
 fn mark_choice(panel: &mut CorrectionUpdateEvent, choices: &Choices) {
     panel.current_style = choices.current_style.map(|i| i as u32);
     panel.current_adjust = choices.current_adjust.map(|i| i as u32);
+    panel.lang = choices.lang;
+    panel.source_lang = choices.source;
 }
 
 /// The shortcut is ignored while a dictation is anywhere in its pipeline
@@ -535,9 +697,9 @@ pub fn check_text(text: &str) -> Result<(), CorrectionErrorCode> {
     Ok(())
 }
 
-/// Temporary bindings a phase listens to: Esc, Enter, one digit per option
-/// and the scroll keys while choosing; Esc (and the scroll keys while text
-/// streams); Esc, Enter, Tab, the scroll keys, Ctrl+C and one digit per
+/// Temporary bindings a phase listens to: Esc, Enter, one digit per option,
+/// the scroll keys and T while choosing; Esc (and the scroll keys while text
+/// streams); Esc, Enter, Tab, the scroll keys, Ctrl+C, T and one digit per
 /// option in the preview; Esc, Enter and one digit per option in the
 /// fallback prompt; nothing otherwise.
 pub fn wanted_bindings(phase: &CorrectionPhase, choices: usize) -> Vec<String> {
@@ -546,7 +708,11 @@ pub fn wanted_bindings(phase: &CorrectionPhase, choices: usize) -> Vec<String> {
         P::Choosing => [CANCEL_ID.to_string(), APPLY_ID.to_string()]
             .into_iter()
             .chain((1..=choices.min(9)).map(|n| format!("{TONE_PREFIX}{n}")))
-            .chain([SCROLL_UP_ID.to_string(), SCROLL_DOWN_ID.to_string()])
+            .chain([
+                SCROLL_UP_ID.to_string(),
+                SCROLL_DOWN_ID.to_string(),
+                LANG_ID.to_string(),
+            ])
             .collect(),
         P::Loading => vec![CANCEL_ID.to_string()],
         P::Generating => vec![
@@ -562,6 +728,7 @@ pub fn wanted_bindings(phase: &CorrectionPhase, choices: usize) -> Vec<String> {
                 SCROLL_UP_ID.to_string(),
                 SCROLL_DOWN_ID.to_string(),
                 COPY_ID.to_string(),
+                LANG_ID.to_string(),
             ])
             .collect(),
         P::NeedsFallback => [CANCEL_ID.to_string(), APPLY_ID.to_string()]
@@ -619,6 +786,7 @@ pub fn binding_key(id: &str) -> Option<String> {
         SCROLL_UP_ID => Some("up".to_string()),
         SCROLL_DOWN_ID => Some("down".to_string()),
         COPY_ID => Some("ctrl+c".to_string()),
+        LANG_ID => Some("t".to_string()),
         _ => tone_digit(id).map(|d| d.to_string()),
     }
 }
@@ -631,6 +799,7 @@ pub fn input_for_binding(id: &str) -> Option<SessionInput> {
         SCROLL_UP_ID => Some(SessionInput::ScrollUp),
         SCROLL_DOWN_ID => Some(SessionInput::ScrollDown),
         COPY_ID => Some(SessionInput::CopyKey),
+        LANG_ID => Some(SessionInput::ToggleLang),
         _ => tone_digit(id).map(SessionInput::Digit),
     }
 }
@@ -673,20 +842,6 @@ fn split_tones(tones: &[CorrectionTone]) -> (Vec<CorrectionTone>, Vec<Correction
         .iter()
         .cloned()
         .partition(|t| t.kind == ToneKind::Style)
-}
-
-/// The translation the translate shortcut runs: the `traduzir` adjustment
-/// (and its index), or the built-in Traduzir goal if the user deleted it.
-fn translate_goal(adjusts: &[CorrectionTone]) -> (Option<usize>, String) {
-    if let Some(i) = adjusts.iter().position(|t| t.id == TRANSLATE_ID) {
-        return (Some(i), adjusts[i].goal.clone());
-    }
-    let goal = default_tones()
-        .into_iter()
-        .find(|t| t.id == TRANSLATE_ID)
-        .map(|t| t.goal)
-        .unwrap_or_default();
-    (None, goal)
 }
 
 /// Runs `work` until it finishes, calling `on_tick` every [`TICK`] meanwhile.
@@ -844,8 +999,8 @@ impl ShortcutAction for CorrectSelectionAction {
     }
 }
 
-/// `translate_selection`: starts a session that translates right away, when
-/// the shortcut is released.
+/// `translate_selection`: starts a session with the PT / EN switch already
+/// flipped (the original translated), when the shortcut is released.
 struct TranslateSelectionAction;
 
 impl ShortcutAction for TranslateSelectionAction {
@@ -1095,7 +1250,8 @@ enum Preload {
 enum SessionMode {
     /// The correction shortcut: the panel waits for a style or an adjustment.
     Correct,
-    /// The translate shortcut: runs the translation right away.
+    /// The translate shortcut: the switch flips at once, translating the
+    /// original.
     Translate,
 }
 
@@ -1145,6 +1301,7 @@ async fn run(app: AppHandle, inputs: UnboundedReceiver<SessionInput>, mode: Sess
         inputs,
         started: Instant::now(),
         start_played: false,
+        quiet_ready: false,
     };
     if let Err(code) = session.correct(mode).await {
         info!("Correction ended with {code:?}");
@@ -1162,6 +1319,8 @@ struct Session {
     started: Instant,
     /// The start sound already played in this session.
     start_played: bool,
+    /// The next preview is a result from memory: no ready sound.
+    quiet_ready: bool,
 }
 
 type Step<T> = Result<Option<T>, CorrectionErrorCode>;
@@ -1190,6 +1349,9 @@ impl Session {
     fn play_sound_for(&mut self, next: &CorrectionPhase) {
         let sound = sound_for_transition(&self.panel.phase, next, self.start_played);
         let Some(sound) = sound else { return };
+        if sound == CorrectionSound::Ready && std::mem::take(&mut self.quiet_ready) {
+            return;
+        }
         if sound == CorrectionSound::Start {
             self.start_played = true;
         }
@@ -1325,21 +1487,21 @@ impl Session {
         self.panel.adjusts = adjusts.iter().map(|t| t.name.clone()).collect();
 
         let mut preload = self.prepare(&settings)?;
-        let mut choices = Choices::default();
-        let (translate_index, translate) = translate_goal(&adjusts);
-        // The goal of a combination: its adjustment's, else its style's. Only
-        // a translation whose adjustment the user deleted has neither.
-        let goal_for = |key: ResultKey| {
+        let source = detect_lang(&self.panel.original);
+        let mut choices = Choices::new(source);
+        mark_choice(&mut self.panel, &choices);
+        // The goal of a run in the original's language: its adjustment's,
+        // else its style's.
+        let goal_of = |key: ResultKey| -> String {
             match (key.adjust, key.style) {
                 (Some(a), _) => adjusts.get(a),
                 (None, Some(s)) => styles.get(s),
                 (None, None) => None,
             }
-            .map_or_else(|| translate.clone(), |t| t.goal.clone())
+            .map(|t| t.goal.clone())
+            .unwrap_or_default()
         };
-        // The first run: what the user picks, or the translation. An unknown
-        // translation adjustment (deleted by the user) runs on the original
-        // without being marked in the list.
+        // The first plan: what the user picks, or the switch flipped.
         let mut plan = match mode {
             SessionMode::Correct => {
                 self.enter(CorrectionPhase::Choosing, choices_len).await;
@@ -1349,13 +1511,7 @@ impl Session {
                 };
                 plan_choice(&choices, pick)
             }
-            SessionMode::Translate => match translate_index {
-                Some(i) => plan_choice(&choices, Pick::Adjust(i)),
-                None => Plan::Generate {
-                    key: choices.key(None, None),
-                    from: Base::Original,
-                },
-            },
+            SessionMode::Translate => plan_choice(&choices, Pick::ToggleLang),
         };
         self.started = Instant::now();
         let Some(target) = self.resolve_target(preload, &settings).await? else {
@@ -1363,28 +1519,41 @@ impl Session {
         };
 
         loop {
+            for run in plan.runs() {
+                let base = choices
+                    .base_text(&run.from, &self.panel.original)
+                    .to_string();
+                let goal = match choices.translation_to(run.key) {
+                    Some(to) => translate_goal(to).to_string(),
+                    None => goal_of(run.key),
+                };
+                let Some(text) = self
+                    .generate(&target, &settings.style_rules, &goal, &base)
+                    .await?
+                else {
+                    return Ok(());
+                };
+                choices.store(run.key, text);
+            }
             let key = plan.key();
-            let text = match plan {
-                Plan::Show(key) => choices.latest(key).unwrap_or_default().to_string(),
-                Plan::Generate { key, from } | Plan::NewVariation { key, from } => {
-                    let source = choices.base_text(&from, &self.panel.original).to_string();
-                    let Some(text) = self
-                        .generate(&target, &settings.style_rules, &goal_for(key), &source)
-                        .await?
-                    else {
-                        return Ok(());
-                    };
-                    choices.store(key, text.clone());
-                    text
-                }
-            };
             choices.select(key);
             mark_choice(&mut self.panel, &choices);
             self.panel.view = CorrectionView::Corrected;
-            self.panel.text = text;
-            self.panel.gen_progress = Some(1.0);
-            self.panel.elapsed_ms = Some(self.started.elapsed().as_millis() as u64);
-            self.enter(CorrectionPhase::Preview, choices_len).await;
+            let phase = if choices.is_original(key) {
+                // Back to the original with nothing picked: the choice again.
+                self.panel.text.clear();
+                self.panel.gen_progress = None;
+                self.panel.elapsed_ms = None;
+                CorrectionPhase::Choosing
+            } else {
+                self.panel.text = choices.latest(key).unwrap_or_default().to_string();
+                self.panel.gen_progress = Some(1.0);
+                self.panel.elapsed_ms =
+                    is_fresh(&plan).then(|| self.started.elapsed().as_millis() as u64);
+                CorrectionPhase::Preview
+            };
+            self.quiet_ready = !is_fresh(&plan);
+            self.enter(phase, choices_len).await;
             match self.next_command(&[]).await {
                 SessionCommand::Apply => {
                     let text = self.panel.text.clone();
@@ -1973,12 +2142,13 @@ mod tests {
                 "correction_view",
                 "correction_scroll_up",
                 "correction_scroll_down",
-                "correction_copy"
+                "correction_copy",
+                "correction_lang"
             ]
         );
         assert_eq!(
             wanted_bindings(&CorrectionPhase::Preview, 12).len(),
-            2 + 9 + 3 + 1
+            2 + 9 + 3 + 1 + 1
         );
         assert_eq!(
             wanted_bindings(&CorrectionPhase::NeedsFallback, 1),
@@ -2510,12 +2680,13 @@ mod tests {
                 "correction_tone_2",
                 "correction_tone_3",
                 "correction_scroll_up",
-                "correction_scroll_down"
+                "correction_scroll_down",
+                "correction_lang"
             ]
         );
         assert_eq!(
             wanted_bindings(&CorrectionPhase::Choosing, 13).len(),
-            2 + 9 + 2
+            2 + 9 + 2 + 1
         );
     }
 
@@ -2578,37 +2749,31 @@ mod tests {
         assert_eq!(ids(&adjusts), ["a", "b"]);
     }
 
-    #[test]
-    fn translation_uses_the_traduzir_adjustment_or_the_default_goal() {
-        use crate::correction::settings::ToneKind::Adjust;
-        let mut adjusts = vec![tone("encurtar", Adjust), tone("traduzir", Adjust)];
-        assert_eq!(
-            translate_goal(&adjusts),
-            (Some(1), "goal traduzir".to_string())
-        );
-        adjusts.retain(|t| t.id != "traduzir");
-        let (index, goal) = translate_goal(&adjusts);
-        assert_eq!(index, None);
-        let default = crate::correction::settings::default_tones()
-            .into_iter()
-            .find(|t| t.id == "traduzir")
-            .unwrap();
-        assert_eq!(goal, default.goal);
-    }
-
     fn key(style: Option<usize>, adjust: Option<usize>) -> ResultKey {
         ResultKey {
             style,
             adjust,
-            lang: Lang::Original,
+            lang: Lang::Pt,
+        }
+    }
+
+    fn en(style: Option<usize>, adjust: Option<usize>) -> ResultKey {
+        ResultKey {
+            lang: Lang::En,
+            ..key(style, adjust)
         }
     }
 
     /// Runs a plan the way the session does, with `reply` as the model's answer.
     fn run_plan(c: &mut Choices, pick: Pick, reply: &str) -> Plan {
         let plan = plan_choice(c, pick);
-        if let Plan::Generate { key, .. } | Plan::NewVariation { key, .. } = &plan {
-            c.store(*key, reply.to_string());
+        for (i, run) in plan.runs().iter().enumerate() {
+            let text = if i == 0 {
+                reply.to_string()
+            } else {
+                format!("{reply} [{:?}]", run.key.lang)
+            };
+            c.store(run.key, text);
         }
         c.select(plan.key());
         plan
@@ -2768,5 +2933,313 @@ mod tests {
         assert!(crate::settings::get_default_settings()
             .bindings
             .contains_key("translate_selection"));
+    }
+
+    #[test]
+    fn t_toggles_the_language_while_choosing_or_previewing() {
+        for p in [CorrectionPhase::Choosing, CorrectionPhase::Preview] {
+            for i in [
+                SessionInput::ToggleLang,
+                SessionInput::Ui(UiAction::ToggleLang),
+            ] {
+                assert_eq!(
+                    decide(&p, i, 4, 4, &[]),
+                    SessionCommand::ToggleLang,
+                    "{p:?}"
+                );
+            }
+        }
+        for p in [
+            CorrectionPhase::Loading,
+            CorrectionPhase::Generating,
+            CorrectionPhase::NeedsFallback,
+            CorrectionPhase::Applied,
+            CorrectionPhase::Copied,
+            CorrectionPhase::Error,
+            CorrectionPhase::Hidden,
+        ] {
+            for i in [
+                SessionInput::ToggleLang,
+                SessionInput::Ui(UiAction::ToggleLang),
+            ] {
+                assert_eq!(
+                    decide(&p, i, 4, 4, &[FallbackOption::Cpu]),
+                    SessionCommand::Ignore,
+                    "{p:?}"
+                );
+            }
+        }
+        assert_eq!(pick_of(&SessionCommand::ToggleLang), Some(Pick::ToggleLang));
+    }
+
+    #[test]
+    fn t_is_a_temporary_key_only_while_choosing_or_previewing() {
+        assert_eq!(binding_key("correction_lang").as_deref(), Some("t"));
+        assert_eq!(
+            input_for_binding("correction_lang"),
+            Some(SessionInput::ToggleLang)
+        );
+        assert!(TEMPORARY_BINDING_IDS.contains(&"correction_lang"));
+        for p in [CorrectionPhase::Choosing, CorrectionPhase::Preview] {
+            assert!(wanted_bindings(&p, 4)
+                .iter()
+                .any(|b| b == "correction_lang"));
+        }
+        for p in [
+            CorrectionPhase::Loading,
+            CorrectionPhase::Generating,
+            CorrectionPhase::NeedsFallback,
+            CorrectionPhase::Applied,
+            CorrectionPhase::Hidden,
+        ] {
+            assert!(!wanted_bindings(&p, 4)
+                .iter()
+                .any(|b| b == "correction_lang"));
+        }
+        // Bound, T is the switch and not typing; while loading it is typing.
+        const VK_T: u32 = 0x54;
+        let preview = wanted_bindings(&CorrectionPhase::Preview, 4);
+        assert!(!hook_dismisses(
+            HookEvent::TypingKey { vk: VK_T },
+            None,
+            &preview
+        ));
+        let loading = wanted_bindings(&CorrectionPhase::Loading, 4);
+        assert!(hook_dismisses(
+            HookEvent::TypingKey { vk: VK_T },
+            None,
+            &loading
+        ));
+    }
+
+    #[test]
+    fn t_parses_on_both_shortcut_backends() {
+        use tauri_plugin_global_shortcut::Shortcut;
+        assert!("t".parse::<Shortcut>().is_ok());
+        assert!("t".parse::<handy_keys::Hotkey>().is_ok());
+    }
+
+    #[test]
+    fn a_session_starts_in_the_language_of_the_original() {
+        let c = Choices::new(Lang::En);
+        assert_eq!((c.source, c.lang), (Lang::En, Lang::En));
+        let c = Choices::new(Lang::Pt);
+        assert_eq!((c.source, c.lang), (Lang::Pt, Lang::Pt));
+    }
+
+    #[test]
+    fn toggling_translates_the_shown_result_and_back_shows_it_again() {
+        let mut c = Choices::new(Lang::Pt);
+        run_plan(&mut c, Pick::Style(0), "formal");
+        assert_eq!(
+            plan_choice(&c, Pick::ToggleLang),
+            Plan::Generate {
+                key: en(Some(0), None),
+                from: Base::Result(key(Some(0), None)),
+            }
+        );
+        run_plan(&mut c, Pick::ToggleLang, "formal en");
+        assert_eq!(c.lang, Lang::En);
+        assert_eq!(c.latest(en(Some(0), None)), Some("formal en"));
+        // Back: the Portuguese result, no request.
+        assert_eq!(
+            plan_choice(&c, Pick::ToggleLang),
+            Plan::Show(key(Some(0), None))
+        );
+        run_plan(&mut c, Pick::ToggleLang, "unused");
+        assert_eq!(c.lang, Lang::Pt);
+        // And again: the translation from memory.
+        assert_eq!(
+            plan_choice(&c, Pick::ToggleLang),
+            Plan::Show(en(Some(0), None))
+        );
+    }
+
+    #[test]
+    fn toggling_an_adjusted_result_translates_that_result() {
+        let mut c = Choices::new(Lang::Pt);
+        run_plan(&mut c, Pick::Style(0), "formal");
+        run_plan(&mut c, Pick::Adjust(1), "formal short");
+        assert_eq!(
+            plan_choice(&c, Pick::ToggleLang),
+            Plan::Generate {
+                key: en(Some(0), Some(1)),
+                from: Base::Result(key(Some(0), Some(1))),
+            }
+        );
+    }
+
+    #[test]
+    fn toggling_before_any_pick_translates_the_original() {
+        let mut c = Choices::new(Lang::Pt);
+        assert_eq!(
+            plan_choice(&c, Pick::ToggleLang),
+            Plan::Generate {
+                key: en(None, None),
+                from: Base::Original,
+            }
+        );
+        run_plan(&mut c, Pick::ToggleLang, "original en");
+        // Back to Portuguese with nothing picked: the original itself.
+        let back = plan_choice(&c, Pick::ToggleLang);
+        assert_eq!(back, Plan::Show(key(None, None)));
+        assert!(c.is_original(back.key()));
+        assert!(!c.is_original(en(None, None)));
+        assert!(!c.is_original(key(Some(0), None)));
+    }
+
+    #[test]
+    fn translate_shortcut_opens_in_the_other_language() {
+        // An English text: the shortcut shows its Portuguese translation.
+        let c = Choices::new(Lang::En);
+        let pt = ResultKey {
+            style: None,
+            adjust: None,
+            lang: Lang::Pt,
+        };
+        assert_eq!(
+            plan_choice(&c, Pick::ToggleLang),
+            Plan::Generate {
+                key: pt,
+                from: Base::Original,
+            }
+        );
+    }
+
+    #[test]
+    fn a_pick_in_the_other_language_runs_in_the_source_then_translates() {
+        let mut c = Choices::new(Lang::Pt);
+        run_plan(&mut c, Pick::ToggleLang, "original en");
+        let plan = plan_choice(&c, Pick::Style(1));
+        assert_eq!(
+            plan,
+            Plan::ThenTranslate {
+                key: key(Some(1), None),
+                from: Base::Original,
+                lang: Lang::En,
+            }
+        );
+        assert_eq!(plan.key(), en(Some(1), None));
+        assert_eq!(
+            plan.runs(),
+            [
+                Run {
+                    key: key(Some(1), None),
+                    from: Base::Original,
+                },
+                Run {
+                    key: en(Some(1), None),
+                    from: Base::Result(key(Some(1), None)),
+                },
+            ]
+        );
+        run_plan(&mut c, Pick::Style(1), "casual");
+        // Both are kept: the source result and its translation, shown.
+        assert_eq!(c.latest(key(Some(1), None)), Some("casual"));
+        assert_eq!(c.latest(en(Some(1), None)), Some("casual [En]"));
+        assert_eq!((c.current_style, c.lang), (Some(1), Lang::En));
+        // An adjustment now works on the style's Portuguese result.
+        assert_eq!(
+            plan_choice(&c, Pick::Adjust(0)),
+            Plan::ThenTranslate {
+                key: key(Some(1), Some(0)),
+                from: Base::Result(key(Some(1), None)),
+                lang: Lang::En,
+            }
+        );
+    }
+
+    #[test]
+    fn a_pick_in_the_other_language_reuses_the_source_result() {
+        let mut c = Choices::new(Lang::Pt);
+        run_plan(&mut c, Pick::Style(0), "formal");
+        run_plan(&mut c, Pick::Style(2), "casual");
+        run_plan(&mut c, Pick::ToggleLang, "casual en");
+        // Style 0 was made in Portuguese already: only the translation runs.
+        assert_eq!(
+            plan_choice(&c, Pick::Style(0)),
+            Plan::Generate {
+                key: en(Some(0), None),
+                from: Base::Result(key(Some(0), None)),
+            }
+        );
+        run_plan(&mut c, Pick::Style(0), "formal en");
+        assert_eq!(
+            plan_choice(&c, Pick::Style(2)),
+            Plan::Show(en(Some(2), None))
+        );
+    }
+
+    #[test]
+    fn the_marked_option_again_in_the_other_language_is_a_new_variation() {
+        let mut c = Choices::new(Lang::Pt);
+        run_plan(&mut c, Pick::Style(0), "formal");
+        run_plan(&mut c, Pick::ToggleLang, "formal en");
+        let plan = plan_choice(&c, Pick::Style(0));
+        assert_eq!(
+            plan,
+            Plan::ThenTranslate {
+                key: key(Some(0), None),
+                from: Base::Original,
+                lang: Lang::En,
+            }
+        );
+        run_plan(&mut c, Pick::Style(0), "formal 2");
+        assert_eq!(c.latest(key(Some(0), None)), Some("formal 2"));
+        assert_eq!(c.latest(en(Some(0), None)), Some("formal 2 [En]"));
+    }
+
+    #[test]
+    fn a_new_source_result_drops_its_old_translation() {
+        let mut c = Choices::new(Lang::Pt);
+        run_plan(&mut c, Pick::Style(0), "formal");
+        run_plan(&mut c, Pick::Adjust(1), "short");
+        run_plan(&mut c, Pick::ToggleLang, "short en");
+        run_plan(&mut c, Pick::ToggleLang, "unused");
+        run_plan(&mut c, Pick::Adjust(1), "short 2");
+        assert_eq!(c.latest(en(Some(0), Some(1))), None);
+        run_plan(&mut c, Pick::Style(0), "unused");
+        run_plan(&mut c, Pick::ToggleLang, "formal en");
+        run_plan(&mut c, Pick::ToggleLang, "unused");
+        run_plan(&mut c, Pick::Style(0), "formal 2");
+        // A new style text: its translation and its adjustments are stale.
+        assert_eq!(c.latest(en(Some(0), None)), None);
+        assert_eq!(c.latest(key(Some(0), Some(1))), None);
+    }
+
+    #[test]
+    fn a_cached_result_shows_without_time_or_sound() {
+        assert!(!is_fresh(&Plan::Show(key(Some(0), None))));
+        assert!(is_fresh(&Plan::Generate {
+            key: key(Some(0), None),
+            from: Base::Original,
+        }));
+        assert!(is_fresh(&Plan::NewVariation {
+            key: key(Some(0), None),
+            from: Base::Original,
+        }));
+        assert!(is_fresh(&Plan::ThenTranslate {
+            key: key(Some(0), None),
+            from: Base::Original,
+            lang: Lang::En,
+        }));
+    }
+
+    #[test]
+    fn a_run_in_the_other_language_is_a_translation() {
+        let c = Choices::new(Lang::Pt);
+        assert_eq!(c.translation_to(key(Some(0), None)), None);
+        assert_eq!(c.translation_to(en(Some(0), None)), Some(Lang::En));
+        let c = Choices::new(Lang::En);
+        assert_eq!(c.translation_to(key(None, None)), Some(Lang::Pt));
+    }
+
+    #[test]
+    fn panel_shows_the_language_and_the_source_language() {
+        let mut panel = CorrectionUpdateEvent::hidden();
+        let mut c = Choices::new(Lang::Pt);
+        run_plan(&mut c, Pick::ToggleLang, "x");
+        mark_choice(&mut panel, &c);
+        assert_eq!((panel.lang, panel.source_lang), (Lang::En, Lang::Pt));
     }
 }

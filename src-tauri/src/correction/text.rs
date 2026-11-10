@@ -4,6 +4,8 @@
 use crate::actions::{strip_invisible_chars, strip_think_block};
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use specta::Type;
 
 /// Longest selection sent to the correction model, in characters.
 pub const MAX_CORRECTION_CHARS: usize = 8000;
@@ -13,6 +15,52 @@ const PROGRESS_CAP: f32 = 0.95;
 
 /// An em dash or en dash with its surrounding spaces.
 static DASH_PAUSE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*[—–]\s*").expect("valid regex"));
+
+/// The language of a text on the panel's PT / EN switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum Lang {
+    #[default]
+    Pt,
+    En,
+}
+
+impl Lang {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Pt => Self::En,
+            Self::En => Self::Pt,
+        }
+    }
+}
+
+/// The language of the selected text: English, or Portuguese for anything
+/// else (the app is made for Portuguese).
+pub fn detect_lang(text: &str) -> Lang {
+    use whatlang::{Detector, Lang as W};
+    // Only the two languages of the switch: short texts are guessed far
+    // better between two than among seventy.
+    let detector = Detector::with_allowlist(vec![W::Eng, W::Por]);
+    match detector.detect_lang(text) {
+        Some(W::Eng) => Lang::En,
+        _ => Lang::Pt,
+    }
+}
+
+/// Goal of a translation into English. It overrides the rules' "Portuguese
+/// only" in so many words, or small models answer in Portuguese.
+pub const TRANSLATE_GOAL_TO_EN: &str = "Traduza o texto para o inglês. Escreva um inglês natural, como uma pessoa nativa escreveria a mesma mensagem, mantendo o mesmo tom, o mesmo nível de formalidade, o mesmo jeito de falar e as mesmas ideias. Esta tarefa é uma tradução, não uma correção, e é a exceção às regras acima sobre o português: a resposta tem que ser escrita inteira em inglês (English), sem nenhuma palavra em português. Não use travessão. Não explique a tradução.";
+
+/// Goal of a translation into Portuguese.
+pub const TRANSLATE_GOAL_TO_PT: &str = "Traduza o texto para o português do Brasil. Escreva um português natural, como um brasileiro escreveria a mesma mensagem, mantendo o mesmo tom, o mesmo nível de formalidade, o mesmo jeito de falar e as mesmas ideias. Esta tarefa é uma tradução, não uma correção: a resposta tem que ser escrita inteira em português do Brasil, sem nenhuma frase em inglês. Não use travessão. Não explique a tradução.";
+
+/// The goal that translates a text into `to`.
+pub fn translate_goal(to: Lang) -> &'static str {
+    match to {
+        Lang::En => TRANSLATE_GOAL_TO_EN,
+        Lang::Pt => TRANSLATE_GOAL_TO_PT,
+    }
+}
 
 /// Builds `(system, user)` messages: the rules followed by the goal, and the
 /// text to correct.
@@ -58,6 +106,58 @@ pub fn load_progress(elapsed_ms: u64, expected_ms: Option<u64>) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SPEC_PT: [&str; 3] = [
+        "oi mano blz? entao eu vi aquele video q vc mandou ontem e achei mt massa, mas acho q o cara errou umas coisa la no final sobre o processador, depois agente conversa melhor sobre isso",
+        "Bom dia, gostaria de saber se é possível remarcar a reunião de amanhã pois eu tive um imprevisto, e não vou conseguir chegar no horário combinado, se puder ser na quinta seria ótimo",
+        "cara esse jogo ta mt bom mas a otimização ta horrivel, minha placa fica em 100% e mesmo assim cai pra 40 fps nas cidade",
+    ];
+
+    #[test]
+    fn detects_portuguese_and_english() {
+        for text in SPEC_PT {
+            assert_eq!(detect_lang(text), Lang::Pt, "{text}");
+        }
+        for text in [
+            "I think the game is worth it even with the bugs, but the price is too high for what it offers, so I would wait for a sale.",
+            "hey, can we move tomorrow's meeting to thursday? something came up",
+            "thanks for the video you sent yesterday",
+        ] {
+            assert_eq!(detect_lang(text), Lang::En, "{text}");
+        }
+    }
+
+    #[test]
+    fn any_other_language_counts_as_portuguese() {
+        assert_eq!(
+            detect_lang("Hola, ¿cómo estás? Mañana vamos a la playa con mis amigos."),
+            Lang::Pt
+        );
+        assert_eq!(detect_lang(""), Lang::Pt);
+        assert_eq!(detect_lang("123"), Lang::Pt);
+    }
+
+    #[test]
+    fn lang_flips() {
+        assert_eq!(Lang::Pt.other(), Lang::En);
+        assert_eq!(Lang::En.other(), Lang::Pt);
+    }
+
+    #[test]
+    fn translation_goals_are_fixed_and_dash_free() {
+        let en = translate_goal(Lang::En);
+        let pt = translate_goal(Lang::Pt);
+        assert_eq!(en, TRANSLATE_GOAL_TO_EN);
+        assert_eq!(pt, TRANSLATE_GOAL_TO_PT);
+        for goal in [en, pt] {
+            assert!(!goal.contains('—') && !goal.contains('–'), "{goal}");
+            assert!(goal.contains("mesmo tom"), "{goal}");
+        }
+        // The English one overrides the Portuguese rule, in so many words.
+        assert!(en.contains("inteira em inglês"));
+        assert!(en.contains("exceção"));
+        assert!(pt.contains("português do Brasil"));
+    }
 
     #[test]
     fn system_prompt_is_rules_then_goal() {

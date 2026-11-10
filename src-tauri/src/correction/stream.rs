@@ -651,72 +651,6 @@ mod tests {
             }
         }
 
-        // Traduzir: Portuguese comes out in English, English comes out in Portuguese.
-        let traduzir = default_tones()
-            .into_iter()
-            .find(|t| t.id == "traduzir")
-            .expect("Traduzir is a default tone");
-        let mut failures = Vec::new();
-        for (i, text) in SPEC_TEXTS.iter().enumerate() {
-            let (system, user) = build_messages(DEFAULT_STYLE_RULES, &traduzir.goal, text);
-            let raw = stream_chat(&target, &system, &user, |_| {}).await;
-            let out = match raw {
-                Ok(r) => clean_output(text, &r),
-                Err(e) => {
-                    engine.unload();
-                    panic!("stream_chat failed: {e}");
-                }
-            };
-            report.push_str(&format!(
-                "[Traduzir pt #{}]
-{out}
-
-",
-                i + 1
-            ));
-            let padded = format!(" {} ", out.to_lowercase());
-            if [" você ", " não ", " muito ", " que "]
-                .iter()
-                .any(|w| padded.contains(w))
-            {
-                failures.push(format!("pt #{} still has Portuguese words: {out}", i + 1));
-            }
-            if ![" the ", " i ", " you ", " is "]
-                .iter()
-                .any(|w| padded.contains(w))
-            {
-                failures.push(format!("pt #{} has no common English words: {out}", i + 1));
-            }
-            if out.contains('—') || out.contains('–') {
-                failures.push(format!("pt #{} has a dash: {out}", i + 1));
-            }
-        }
-        let english = "I think the game is worth it even with the bugs, but the price is too high for what it offers, so I would wait for a sale.";
-        let (system, user) = build_messages(DEFAULT_STYLE_RULES, &traduzir.goal, english);
-        let out = match stream_chat(&target, &system, &user, |_| {}).await {
-            Ok(r) => clean_output(english, &r),
-            Err(e) => {
-                engine.unload();
-                panic!("stream_chat failed: {e}");
-            }
-        };
-        report.push_str(&format!(
-            "[Traduzir en]
-{out}
-
-"
-        ));
-        let padded = format!(" {} ", out.to_lowercase());
-        if ![" que ", " não ", " muito ", " o ", " é "]
-            .iter()
-            .any(|w| padded.contains(w))
-        {
-            failures.push(format!("en text did not come out in Portuguese: {out}"));
-        }
-        if out.contains('—') || out.contains('–') {
-            failures.push(format!("en text has a dash: {out}"));
-        }
-
         print!("{report}");
         if let Ok(path) = std::env::var("HANDY_PLUS_TEST_REPORT") {
             std::fs::write(path, &report).unwrap();
@@ -726,6 +660,86 @@ mod tests {
             tone_failures.is_empty(),
             "Tone failures: {tone_failures:#?}"
         );
-        assert!(failures.is_empty(), "Traduzir failures: {failures:#?}");
+    }
+
+    /// The PT / EN switch: the spec texts into English and an English text
+    /// into Portuguese, with the fixed translation goals.
+    /// Manual: HANDY_PLUS_TEST_GGUF=caminho\modelo.gguf HANDY_PLUS_TEST_REPORT=saida.txt cargo test correction::stream::tests::real_local_engine_translates -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn real_local_engine_translates() {
+        use crate::correction::local_engine::LocalEngine;
+        use crate::correction::settings::DEFAULT_STYLE_RULES;
+        use crate::correction::text::{
+            build_messages, clean_output, detect_lang, translate_goal, Lang,
+        };
+        use std::path::PathBuf;
+
+        let model =
+            PathBuf::from(std::env::var("HANDY_PLUS_TEST_GGUF").expect("set HANDY_PLUS_TEST_GGUF"));
+        let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/llama-server/llama-server.exe");
+        let engine = LocalEngine::new(bin);
+        let (url, _) = engine
+            .ensure_loaded(&model, true, None, |_| {})
+            .await
+            .expect("load model");
+        let target = ChatTarget {
+            base_url: url,
+            api_key: String::new(),
+            model: "local".into(),
+            format: PostProcessApiFormat::OpenAi,
+            local: true,
+        };
+        let english = "I think the game is worth it even with the bugs, but the price is too high for what it offers, so I would wait for a sale.";
+        let mut cases: Vec<(&str, Lang)> = SPEC_TEXTS.iter().map(|t| (*t, Lang::En)).collect();
+        cases.push((TONES_SAMPLE, Lang::En));
+        cases.push((english, Lang::Pt));
+
+        let mut report = String::new();
+        let mut failures = Vec::new();
+        for (i, (text, to)) in cases.iter().enumerate() {
+            assert_eq!(
+                detect_lang(text),
+                to.other(),
+                "source language of #{}",
+                i + 1
+            );
+            let (system, user) = build_messages(DEFAULT_STYLE_RULES, translate_goal(*to), text);
+            let raw = match stream_chat(&target, &system, &user, |_| {}).await {
+                Ok(r) => r,
+                Err(e) => {
+                    engine.unload();
+                    panic!("stream_chat failed: {e}");
+                }
+            };
+            let out = clean_output(text, &raw);
+            let line = format!("[#{} -> {to:?}]\n{text}\n=>\n{out}\n\n", i + 1);
+            print!("{line}");
+            report.push_str(&line);
+            // The raw reply: the cleanup would turn dashes into commas.
+            if raw.contains('—') || raw.contains('–') {
+                failures.push(format!("#{} has a dash: {raw}", i + 1));
+            }
+            if detect_lang(&out) != *to {
+                failures.push(format!("#{} is not in {to:?}: {out}", i + 1));
+            }
+            let padded = format!(" {} ", out.to_lowercase());
+            let leftovers: &[&str] = match to {
+                Lang::En => &[" você ", " não ", " muito ", " que ", " mas "],
+                Lang::Pt => &[" the ", " but ", " would ", " is "],
+            };
+            if leftovers.iter().any(|w| padded.contains(w)) {
+                failures.push(format!(
+                    "#{} keeps words of the source language: {out}",
+                    i + 1
+                ));
+            }
+        }
+        if let Ok(path) = std::env::var("HANDY_PLUS_TEST_REPORT") {
+            std::fs::write(path, &report).unwrap();
+        }
+        engine.unload();
+        assert!(failures.is_empty(), "Translation failures: {failures:#?}");
     }
 }

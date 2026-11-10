@@ -6,6 +6,7 @@
 //! into the overlay panel via [`CorrectionUpdateEvent`] and waits for Enter,
 //! a digit or Esc, which arrive through temporary global shortcuts.
 
+use super::input_hooks::{self, binding_vk, click_outside, HookEvent};
 use super::local_engine::{EngineError, LocalEngine};
 use super::selection::{self, CaptureError};
 use super::settings::{
@@ -194,6 +195,8 @@ pub enum SessionInput {
     Shortcut,
     /// A click in the panel.
     Ui(UiAction),
+    /// A click outside the panel, or the user typing again.
+    Dismiss,
 }
 
 /// What a click in the panel asks for.
@@ -240,7 +243,10 @@ pub fn decide(
     match (phase, input) {
         (
             P::Loading | P::Generating | P::Preview | P::NeedsFallback,
-            SessionInput::Escape | SessionInput::Shortcut | SessionInput::Ui(UiAction::Cancel),
+            SessionInput::Escape
+            | SessionInput::Shortcut
+            | SessionInput::Dismiss
+            | SessionInput::Ui(UiAction::Cancel),
         ) => SessionCommand::Cancel,
         (P::Preview, SessionInput::Enter | SessionInput::Ui(UiAction::Apply)) => {
             SessionCommand::Apply
@@ -293,6 +299,24 @@ pub fn shortcut_route(dictation_busy: bool, session_active: bool) -> ShortcutRou
         ShortcutRoute::Start
     } else {
         ShortcutRoute::Ignore
+    }
+}
+
+/// A hook event closes the open panel: a click outside `panel` (its physical
+/// screen rect, if known), or a typing key the panel is not bound to
+/// (`registered` = temporary binding ids, so a tone digit stays a tone key).
+pub fn hook_dismisses(
+    ev: HookEvent,
+    panel: Option<(i32, i32, i32, i32)>,
+    registered: &[String],
+) -> bool {
+    match ev {
+        HookEvent::MouseDown { x, y } => panel.is_some_and(|rect| click_outside(x, y, rect)),
+        HookEvent::TypingKey { vk } => !registered
+            .iter()
+            .filter_map(|id| binding_key(id))
+            .filter_map(|key| binding_vk(&key))
+            .any(|bound| bound == vk),
     }
 }
 
@@ -482,6 +506,9 @@ pub struct CorrectionSessionState {
     inputs: Mutex<Option<UnboundedSender<SessionInput>>>,
     /// Temporary bindings currently registered with the shortcut backend.
     registered: Mutex<Vec<String>>,
+    /// Bindings just unregistered, and when: a tone key re-binds the panel
+    /// while the key is still down, so it must not then count as typing.
+    recently_unbound: Mutex<Vec<(String, Instant)>>,
 }
 
 /// Creates the local engine and session state and starts the GPU watcher.
@@ -506,6 +533,63 @@ fn engine_binary(app: &AppHandle) -> PathBuf {
         Ok(path) if path.is_file() => path,
         _ => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(REL),
     }
+}
+
+/// How long a just-unbound panel key still does not count as typing.
+const UNBOUND_GRACE: Duration = Duration::from_millis(1000);
+
+/// Closes the open panel on a click outside it or when the user types again
+/// (the key still reaches the program). Installs the input hooks.
+pub fn watch_input_hooks(app: &AppHandle) {
+    let app = app.clone();
+    input_hooks::start_hooks(move |ev| {
+        let Some(state) = app.try_state::<CorrectionSessionState>() else {
+            return;
+        };
+        // Cheap exit while no correction runs: dictation and games untouched.
+        if !state.active.load(Ordering::SeqCst) {
+            return;
+        }
+        let panel = match ev {
+            HookEvent::MouseDown { .. } => overlay_rect(&app),
+            HookEvent::TypingKey { .. } => None,
+        };
+        let mut bound = lock(&state.registered).clone();
+        {
+            let mut recent = lock(&state.recently_unbound);
+            recent.retain(|(_, at)| at.elapsed() < UNBOUND_GRACE);
+            bound.extend(recent.iter().map(|(id, _)| id.clone()));
+        }
+        if hook_dismisses(ev, panel, &bound) {
+            let why = match ev {
+                HookEvent::MouseDown { .. } => "a click outside the panel",
+                HookEvent::TypingKey { .. } => "typing",
+            };
+            debug!("Correction panel dismissed by {why}");
+            input(&app, SessionInput::Dismiss);
+        }
+    });
+}
+
+/// The overlay window's rect in physical screen pixels, while it is shown.
+#[cfg(windows)]
+fn overlay_rect(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindowVisible};
+    let hwnd = app.get_webview_window("recording_overlay")?.hwnd().ok()?;
+    let mut r = RECT::default();
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return None;
+        }
+        GetWindowRect(hwnd, &mut r).ok()?;
+    }
+    Some((r.left, r.top, r.right, r.bottom))
+}
+
+#[cfg(not(windows))]
+fn overlay_rect(_app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
+    None
 }
 
 /// Stops the local model (app exit).
@@ -635,6 +719,7 @@ async fn set_bindings(app: &AppHandle, wanted: Vec<String>) {
 
 fn sync_bindings(app: &AppHandle, wanted: &[String]) {
     let state = app.state::<CorrectionSessionState>();
+    lock(&state.recently_unbound).retain(|(_, at)| at.elapsed() < UNBOUND_GRACE);
     let mut registered = lock(&state.registered);
     registered.retain(|id| {
         if wanted.contains(id) {
@@ -645,6 +730,7 @@ fn sync_bindings(app: &AppHandle, wanted: &[String]) {
                 warn!("Could not unregister '{id}': {e}");
             }
         }
+        lock(&state.recently_unbound).push((id.clone(), Instant::now()));
         false
     });
     for id in wanted {
@@ -1676,5 +1762,77 @@ mod tests {
         );
         assert_eq!(sound_for_transition(&Preview, &Generating, true), None);
         assert_eq!(sound_for_transition(&Generating, &Error, true), None);
+    }
+
+    #[test]
+    fn dismiss_closes_open_phases_only() {
+        for p in [
+            CorrectionPhase::Loading,
+            CorrectionPhase::Generating,
+            CorrectionPhase::Preview,
+            CorrectionPhase::NeedsFallback,
+        ] {
+            assert_eq!(
+                decide(&p, SessionInput::Dismiss, 6, &[FallbackOption::Cpu]),
+                SessionCommand::Cancel
+            );
+        }
+        for p in [
+            CorrectionPhase::Applied,
+            CorrectionPhase::Copied,
+            CorrectionPhase::Error,
+            CorrectionPhase::Hidden,
+        ] {
+            assert_eq!(
+                decide(&p, SessionInput::Dismiss, 6, &[]),
+                SessionCommand::Ignore
+            );
+        }
+    }
+
+    #[test]
+    fn hook_events_dismiss_on_outside_click_or_typing() {
+        let rect = Some((100, 100, 860, 560));
+        let none: Vec<String> = Vec::new();
+        assert!(!hook_dismisses(
+            HookEvent::MouseDown { x: 300, y: 300 },
+            rect,
+            &none
+        ));
+        assert!(hook_dismisses(
+            HookEvent::MouseDown { x: 50, y: 300 },
+            rect,
+            &none
+        ));
+        // Unknown panel position: never guess.
+        assert!(!hook_dismisses(
+            HookEvent::MouseDown { x: 50, y: 300 },
+            None,
+            &none
+        ));
+        assert!(hook_dismisses(
+            HookEvent::TypingKey { vk: 0x41 },
+            rect,
+            &none
+        ));
+        // A digit the panel listens to is a tone key, not typing...
+        let preview = wanted_bindings(&CorrectionPhase::Preview, 4);
+        assert!(!hook_dismisses(
+            HookEvent::TypingKey { vk: 0x32 },
+            rect,
+            &preview
+        ));
+        // ...but a digit with no tone, or any digit while loading, is typing.
+        assert!(hook_dismisses(
+            HookEvent::TypingKey { vk: 0x37 },
+            rect,
+            &preview
+        ));
+        let loading = wanted_bindings(&CorrectionPhase::Loading, 4);
+        assert!(hook_dismisses(
+            HookEvent::TypingKey { vk: 0x32 },
+            rect,
+            &loading
+        ));
     }
 }

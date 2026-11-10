@@ -2,6 +2,7 @@
 
 pub mod gpu_guard;
 pub mod import;
+pub mod input_hooks;
 pub mod local_engine;
 pub mod models;
 pub mod selection;

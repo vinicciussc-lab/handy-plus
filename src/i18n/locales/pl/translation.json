@@ -356,7 +356,7 @@
           },
           "translate_selection": {
             "name": "Translation Shortcut",
-            "description": "The keyboard shortcut to translate the selected text right away (Portuguese to English, or English to Portuguese)."
+            "description": "Opens the panel already translating the text."
           }
         },
         "errors": {
@@ -969,20 +969,30 @@
         "description": "How your texts should sound. These rules are sent with every correction."
       },
       "tones": {
-        "title": "Tones",
-        "description": "Each tone is a goal for the correction. The first one is the default when you use the shortcut. You can have up to {{max}} tones.",
-        "name": "Tone name",
+        "styles": {
+          "title": "Styles",
+          "description": "A style rewrites the original text. Pick one first; the first style is the default (Enter). Up to {{max}} styles.",
+          "add": "Add style",
+          "newName": "New style",
+          "newGoal": "Rewrite the text in the style described here.",
+          "maxReached": "Limit of {{max}} styles reached",
+          "keepOne": "At least one style is required"
+        },
+        "adjusts": {
+          "title": "Adjustments",
+          "description": "An adjustment changes the current result and can be chained after a style. Up to {{max}} adjustments.",
+          "add": "Add adjustment",
+          "newName": "New adjustment",
+          "newGoal": "Adjust the current text as described here.",
+          "maxReached": "Limit of {{max}} adjustments reached"
+        },
+        "name": "Name",
         "namePlaceholder": "Name",
-        "goal": "Tone goal",
-        "goalPlaceholder": "What the correction should do",
+        "goal": "Goal",
+        "goalPlaceholder": "What it should do",
         "moveUp": "Move up",
         "moveDown": "Move down",
-        "delete": "Delete tone",
-        "keepOne": "At least one tone is required",
-        "add": "Add tone",
-        "maxReached": "Limit of {{max}} tones reached",
-        "newName": "New tone",
-        "newGoal": "Correct the text and adjust its tone as described here."
+        "delete": "Delete"
       },
       "sounds": {
         "title": "Sound",
@@ -1102,7 +1112,10 @@
         "cloud_failed": "The cloud AI failed",
         "keys_held": "Release the keys and try again",
         "clipboard_failed": "Could not copy the text"
-      }
+      },
+      "styleGroup": "Style",
+      "adjustGroup": "Adjustments",
+      "chooseStyle": "Choose a style (Enter = {{name}})"
     },
     "typingHint": {
       "text": "to improve the text"

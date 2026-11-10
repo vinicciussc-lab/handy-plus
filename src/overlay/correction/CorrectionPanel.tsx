@@ -194,19 +194,34 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
     .join(" + ");
   const toneModel = [running, modelLabel].filter(Boolean).join(" · ");
 
+  const group = (label: string, names: string[], offset: number) =>
+    names.length > 0 && (
+      <div className="cor-group">
+        <div className="cor-group-title">{label}</div>
+        {names.map((name, k) => {
+          const i = offset + k;
+          return (
+            <div
+              key={i}
+              className={isOn(i) ? "on" : ""}
+              onMouseDown={noFocus}
+              onClick={() => sendAction({ kind: "tone", value: i + 1 })}
+            >
+              <span className="cor-tone-name">
+                {adjustsStart <= i && isOn(i) ? `${CHECK} ` : ""}
+                {name}
+              </span>
+              <span className="cor-n">{i < 9 ? i + 1 : ""}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  const adjustsStart = styles.length;
   const optionList = options.length > 0 && (
     <div className="cor-tones cor-scroll" onWheel={wheelFallback}>
-      {options.map((name, i) => (
-        <div
-          key={i}
-          className={isOn(i) ? "on" : ""}
-          onMouseDown={noFocus}
-          onClick={() => sendAction({ kind: "tone", value: i + 1 })}
-        >
-          <span className="cor-tone-name">{name}</span>
-          <span className="cor-n">{i < 9 ? i + 1 : ""}</span>
-        </div>
-      ))}
+      {group(t("overlay.correction.styleGroup"), styles, 0)}
+      {group(t("overlay.correction.adjustGroup"), adjusts, styles.length)}
     </div>
   );
   const pickHint = options.length > 1 && (
@@ -227,10 +242,17 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
       card = (
         <>
           {update.preloading && (
-            <ProgressRow
-              label={t("overlay.correction.loadingModel")}
-              value={update.load_progress}
-            />
+            <div className="cor-preload">
+              <span>{t("overlay.correction.loadingModel")}</span>
+              <span className="cor-bar">
+                <i className="run" />
+              </span>
+            </div>
+          )}
+          {styles.length > 0 && (
+            <div className="cor-choose">
+              {t("overlay.correction.chooseStyle", { name: styles[0] })}
+            </div>
           )}
           <div className="cor-grid">
             <div

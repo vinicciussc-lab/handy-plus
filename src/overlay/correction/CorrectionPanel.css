@@ -152,7 +152,7 @@
 /* Preview */
 .cor-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 140px;
+  grid-template-columns: minmax(0, 1fr) 176px;
   grid-template-rows: minmax(0, 1fr);
   gap: 12px;
   flex: 1 1 auto;
@@ -204,7 +204,37 @@
   border-inline-start: 1px solid var(--s-hair);
   padding-inline-start: 8px;
 }
-.cor-tones > div {
+.cor-group + .cor-group {
+  margin-top: 8px;
+}
+.cor-group-title {
+  padding: 0 8px 2px;
+  color: var(--s-faint);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cor-preload {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--s-faint);
+  font-size: 11px;
+}
+.cor-preload .cor-bar {
+  height: 3px;
+  max-width: 160px;
+}
+.cor-choose {
+  flex: none;
+  margin-bottom: 8px;
+  color: var(--s-muted);
+  font-size: 12px;
+}
+.cor-group > div:not(.cor-group-title) {
   display: flex;
   justify-content: space-between;
   gap: 6px;
@@ -213,10 +243,10 @@
   color: var(--s-muted);
   cursor: pointer;
 }
-.cor-tones > div:hover {
+.cor-group > div:not(.cor-group-title):hover {
   background: var(--s-hair);
 }
-.cor-tones > div.on {
+.cor-group > div.on {
   background: var(--s-hair);
   color: var(--color-text);
 }

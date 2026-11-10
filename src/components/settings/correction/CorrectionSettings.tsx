@@ -111,12 +111,10 @@ export const CorrectionSettings: React.FC = () => {
         />
       </SettingsGroup>
 
-      <SettingsGroup title={t("settings.correction.tones.title")}>
-        <CorrectionTonesEditor
-          tones={settings.tones}
-          onChange={(tones) => update({ tones })}
-        />
-      </SettingsGroup>
+      <CorrectionTonesEditor
+        tones={settings.tones}
+        onChange={(tones) => update({ tones })}
+      />
     </div>
   );
 };

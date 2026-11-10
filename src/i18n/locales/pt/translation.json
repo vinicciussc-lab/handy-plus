@@ -356,7 +356,7 @@
           },
           "translate_selection": {
             "name": "Atalho de Tradução",
-            "description": "O atalho para traduzir o texto selecionado na hora (de português para inglês, ou de inglês para português)."
+            "description": "Abre o painel já traduzindo o texto."
           }
         },
         "errors": {
@@ -969,20 +969,30 @@
         "description": "Como os seus textos devem soar. Essas regras vão junto em toda correção."
       },
       "tones": {
-        "title": "Tons",
-        "description": "Cada tom é um objetivo para a correção. O primeiro é o padrão quando você usa o atalho. Você pode ter até {{max}} tons.",
-        "name": "Nome do tom",
+        "styles": {
+          "title": "Estilos",
+          "description": "Um estilo reescreve o texto original. Escolha um primeiro; o primeiro estilo é o padrão (Enter). Até {{max}} estilos.",
+          "add": "Adicionar estilo",
+          "newName": "Novo estilo",
+          "newGoal": "Reescreva o texto no estilo descrito aqui.",
+          "maxReached": "Limite de {{max}} estilos atingido",
+          "keepOne": "É preciso manter pelo menos um estilo"
+        },
+        "adjusts": {
+          "title": "Ajustes",
+          "description": "Um ajuste altera o resultado atual e pode ser encadeado depois de um estilo. Até {{max}} ajustes.",
+          "add": "Adicionar ajuste",
+          "newName": "Novo ajuste",
+          "newGoal": "Ajuste o texto atual como descrito aqui.",
+          "maxReached": "Limite de {{max}} ajustes atingido"
+        },
+        "name": "Nome",
         "namePlaceholder": "Nome",
-        "goal": "Objetivo do tom",
-        "goalPlaceholder": "O que a correção deve fazer",
+        "goal": "Objetivo",
+        "goalPlaceholder": "O que deve fazer",
         "moveUp": "Subir",
         "moveDown": "Descer",
-        "delete": "Apagar tom",
-        "keepOne": "É preciso manter pelo menos um tom",
-        "add": "Adicionar tom",
-        "maxReached": "Limite de {{max}} tons atingido",
-        "newName": "Novo tom",
-        "newGoal": "Corrija o texto e ajuste o tom como descrito aqui."
+        "delete": "Apagar"
       },
       "sounds": {
         "title": "Som",
@@ -1102,7 +1112,10 @@
         "cloud_failed": "A IA na nuvem falhou",
         "keys_held": "Solte as teclas e tente de novo",
         "clipboard_failed": "Não deu para copiar o texto"
-      }
+      },
+      "styleGroup": "Estilo",
+      "adjustGroup": "Ajustes",
+      "chooseStyle": "Escolha um estilo (Enter = {{name}})"
     },
     "typingHint": {
       "text": "para melhorar o texto"

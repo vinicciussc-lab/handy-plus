@@ -5,12 +5,16 @@ import type { CorrectionTone } from "@/bindings";
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
 import { Textarea } from "../../ui/Textarea";
-
-export const MAX_TONES = 9;
+import { SettingsGroup } from "../../ui/SettingsGroup";
+import { joinTones, MAX_PER_KIND, moveItem, splitTones } from "./tones";
 
 interface ToneRowProps {
   tone: CorrectionTone;
   index: number;
+  // The number the tone has in the panel (styles first, then adjustments).
+  number: number;
+  canDelete: boolean;
+  keepOneTitle: string;
   count: number;
   onEdit: (tone: CorrectionTone) => void;
   onMove: (direction: -1 | 1) => void;
@@ -20,6 +24,9 @@ interface ToneRowProps {
 const ToneRow: React.FC<ToneRowProps> = ({
   tone,
   index,
+  number,
+  canDelete,
+  keepOneTitle,
   count,
   onEdit,
   onMove,
@@ -49,7 +56,7 @@ const ToneRow: React.FC<ToneRowProps> = ({
     <div className="space-y-2 p-3 rounded-md border border-line bg-wash/50">
       <div className="flex items-center gap-2">
         <span className="text-xs font-semibold text-ink-3 w-5 shrink-0">
-          {index + 1}
+          {number <= MAX_PER_KIND ? number : ""}
         </span>
         <Input
           type="text"
@@ -85,12 +92,10 @@ const ToneRow: React.FC<ToneRowProps> = ({
           variant="danger-ghost"
           size="sm"
           onClick={onDelete}
-          disabled={count <= 1}
+          disabled={!canDelete}
           aria-label={t("settings.correction.tones.delete")}
           title={
-            count <= 1
-              ? t("settings.correction.tones.keepOne")
-              : t("settings.correction.tones.delete")
+            !canDelete ? keepOneTitle : t("settings.correction.tones.delete")
           }
         >
           <Trash2 className="h-4 w-4" />
@@ -110,6 +115,84 @@ const ToneRow: React.FC<ToneRowProps> = ({
   );
 };
 
+interface ToneListProps {
+  kind: "styles" | "adjusts";
+  tones: CorrectionTone[];
+  firstNumber: number;
+  onChange: (tones: CorrectionTone[]) => void;
+}
+
+const ToneList: React.FC<ToneListProps> = ({
+  kind,
+  tones,
+  firstNumber,
+  onChange,
+}) => {
+  const { t } = useTranslation();
+  const key = `settings.correction.tones.${kind}`;
+  const atMax = tones.length >= MAX_PER_KIND;
+  // Styles can't be emptied: the panel needs a default.
+  const mustKeepOne = kind === "styles" && tones.length <= 1;
+
+  const add = () => {
+    if (atMax) return;
+    onChange([
+      ...tones,
+      {
+        id: `tom_${Date.now().toString(36)}`,
+        name: t(`${key}.newName`),
+        goal: t(`${key}.newGoal`),
+        kind: kind === "styles" ? "style" : "adjust",
+      },
+    ]);
+  };
+
+  return (
+    <div className="px-4 p-2 space-y-3">
+      <p className="text-sm text-ink-3">
+        {t(`${key}.description`, { max: MAX_PER_KIND })}
+      </p>
+      <div className="space-y-3">
+        {tones.map((tone, index) => (
+          <ToneRow
+            key={tone.id}
+            tone={tone}
+            index={index}
+            number={firstNumber + index}
+            count={tones.length}
+            canDelete={!mustKeepOne}
+            keepOneTitle={t("settings.correction.tones.styles.keepOne")}
+            onEdit={(next) =>
+              onChange(tones.map((c, i) => (i === index ? next : c)))
+            }
+            onMove={(direction) => onChange(moveItem(tones, index, direction))}
+            onDelete={() => {
+              if (!mustKeepOne) onChange(tones.filter((_, i) => i !== index));
+            }}
+          />
+        ))}
+      </div>
+      <div className="flex items-center gap-3">
+        <Button
+          variant="primary"
+          size="md"
+          onClick={add}
+          disabled={atMax}
+          className="flex items-center gap-1"
+        >
+          <Plus className="h-4 w-4" />
+          {t(`${key}.add`)}
+        </Button>
+        {atMax && (
+          <span className="text-xs text-ink-3">
+            {t(`${key}.maxReached`, { max: MAX_PER_KIND })}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
 interface CorrectionTonesEditorProps {
   tones: CorrectionTone[];
   onChange: (tones: CorrectionTone[]) => void;
@@ -120,71 +203,26 @@ export const CorrectionTonesEditor: React.FC<CorrectionTonesEditorProps> = ({
   onChange,
 }) => {
   const { t } = useTranslation();
-
-  const edit = (index: number, tone: CorrectionTone) =>
-    onChange(tones.map((current, i) => (i === index ? tone : current)));
-
-  const move = (index: number, direction: -1 | 1) => {
-    const target = index + direction;
-    if (target < 0 || target >= tones.length) return;
-    const next = [...tones];
-    [next[index], next[target]] = [next[target], next[index]];
-    onChange(next);
-  };
-
-  const remove = (index: number) => {
-    if (tones.length <= 1) return;
-    onChange(tones.filter((_, i) => i !== index));
-  };
-
-  const add = () => {
-    if (tones.length >= MAX_TONES) return;
-    onChange([
-      ...tones,
-      {
-        id: `tom_${Date.now().toString(36)}`,
-        name: t("settings.correction.tones.newName"),
-        goal: t("settings.correction.tones.newGoal"),
-        kind: "style",
-      },
-    ]);
-  };
+  const { styles, adjusts } = splitTones(tones);
 
   return (
-    <div className="px-4 p-2 space-y-3">
-      <p className="text-sm text-ink-3">
-        {t("settings.correction.tones.description", { max: MAX_TONES })}
-      </p>
-      <div className="space-y-3">
-        {tones.map((tone, index) => (
-          <ToneRow
-            key={tone.id}
-            tone={tone}
-            index={index}
-            count={tones.length}
-            onEdit={(next) => edit(index, next)}
-            onMove={(direction) => move(index, direction)}
-            onDelete={() => remove(index)}
-          />
-        ))}
-      </div>
-      <div className="flex items-center gap-3">
-        <Button
-          variant="primary"
-          size="md"
-          onClick={add}
-          disabled={tones.length >= MAX_TONES}
-          className="flex items-center gap-1"
-        >
-          <Plus className="h-4 w-4" />
-          {t("settings.correction.tones.add")}
-        </Button>
-        {tones.length >= MAX_TONES && (
-          <span className="text-xs text-ink-3">
-            {t("settings.correction.tones.maxReached", { max: MAX_TONES })}
-          </span>
-        )}
-      </div>
-    </div>
+    <>
+      <SettingsGroup title={t("settings.correction.tones.styles.title")}>
+        <ToneList
+          kind="styles"
+          tones={styles}
+          firstNumber={1}
+          onChange={(next) => onChange(joinTones(next, adjusts))}
+        />
+      </SettingsGroup>
+      <SettingsGroup title={t("settings.correction.tones.adjusts.title")}>
+        <ToneList
+          kind="adjusts"
+          tones={adjusts}
+          firstNumber={styles.length + 1}
+          onChange={(next) => onChange(joinTones(styles, next))}
+        />
+      </SettingsGroup>
+    </>
   );
 };

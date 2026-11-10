@@ -70,9 +70,13 @@ impl HintTracker {
         }
     }
 
-    /// The model was unloaded: every window may preload again, after typing
-    /// enough keys anew.
-    pub fn engine_unloaded(&mut self) {
+    /// The model was unloaded. After the idle time every window may preload
+    /// again, after typing enough keys anew; after a game or low VRAM needed
+    /// the GPU the windows stay marked, so the model is not loaded straight back.
+    pub fn engine_unloaded(&mut self, by_gpu_pressure: bool) {
+        if by_gpu_pressure {
+            return;
+        }
         self.preloaded.clear();
         self.preload_keys = 0;
     }
@@ -123,6 +127,8 @@ pub struct PreloadCheck {
     pub in_flight: bool,
     /// The model unloads as soon as it is idle, so a preload would be wasted.
     pub unload_immediately: bool,
+    /// A game or low VRAM needed the GPU a short while ago ([`preload_backed_off`]).
+    pub backed_off: bool,
     pub fullscreen: bool,
     pub dictation_busy: bool,
     pub session_active: bool,
@@ -141,15 +147,29 @@ pub fn preload_wanted(c: &PreloadCheck) -> bool {
         && !c.engine_ready
         && !c.in_flight
         && !c.unload_immediately
+        && !c.backed_off
         && !c.fullscreen
         && !c.dictation_busy
         && !c.session_active
         && !c.own_window
 }
 
-/// Typing should start loading the local model now.
+/// Typing should start loading the local model now. Unlike a session, the
+/// room needed covers the server's runtime too, so the preload never meets
+/// the low VRAM rules that would cancel or unload it.
 pub fn should_preload(c: &PreloadCheck) -> bool {
-    preload_wanted(c) && super::gpu_guard::has_room(c.free_vram, c.model_bytes)
+    let needed = c
+        .model_bytes
+        .saturating_add(super::gpu_guard::RUNTIME_OVERHEAD_BYTES);
+    preload_wanted(c) && super::gpu_guard::has_room(c.free_vram, needed)
+}
+
+/// No typing preload for this long after a game or low VRAM needed the GPU.
+pub const PRELOAD_BACKOFF: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// The GPU was needed elsewhere since ago, recently enough to hold preloads back.
+pub fn preload_backed_off(since: Option<std::time::Duration>) -> bool {
+    since.is_some_and(|d| d < PRELOAD_BACKOFF)
 }
 
 /// A session opening must check free VRAM before loading only when the model
@@ -240,7 +260,8 @@ mod runtime {
         let due = {
             let mut h = lock(hint);
             if h.engine_loaded && !loaded {
-                h.tracker.engine_unloaded();
+                let pressure = super::preload_backed_off(gpu_guard::since_gpu_pressure());
+                h.tracker.engine_unloaded(pressure);
             }
             h.engine_loaded = loaded;
             h.tracker.preload_due()
@@ -451,6 +472,7 @@ mod tests {
             engine_ready: false,
             in_flight: false,
             unload_immediately: false,
+            backed_off: false,
             fullscreen: false,
             dictation_busy: false,
             session_active: false,
@@ -549,11 +571,64 @@ mod tests {
         t.preload_checked(W, true);
         let last = type_keys(&mut t, W, HINT_MIN_KEYS, last + 100);
         assert_eq!(t.preload_due(), None);
-        t.engine_unloaded();
+        t.engine_unloaded(false);
         // The keys typed while it was loaded do not count.
         assert_eq!(t.preload_due(), None);
         type_keys(&mut t, W, HINT_MIN_KEYS, last + 100);
         assert_eq!(t.preload_due(), Some(W));
+    }
+
+    #[test]
+    fn only_an_idle_unload_rearms_the_windows() {
+        let mut t = HintTracker::default();
+        let last = type_keys(&mut t, W, HINT_MIN_KEYS, 0);
+        t.preload_checked(W, true);
+        // Unloaded because a game or low VRAM needed the GPU: stays marked.
+        t.engine_unloaded(true);
+        let last = type_keys(&mut t, W, HINT_MIN_KEYS, last + 100);
+        assert_eq!(t.preload_due(), None);
+        // Unloaded after the idle time: typing there preloads again.
+        t.engine_unloaded(false);
+        type_keys(&mut t, W, HINT_MIN_KEYS, last + 100);
+        assert_eq!(t.preload_due(), Some(W));
+    }
+
+    #[test]
+    fn gpu_pressure_backs_off_every_preload_for_a_while() {
+        use std::time::Duration;
+        assert!(!preload_backed_off(None));
+        assert!(preload_backed_off(Some(Duration::ZERO)));
+        assert!(preload_backed_off(Some(
+            PRELOAD_BACKOFF - Duration::from_secs(1)
+        )));
+        assert!(!preload_backed_off(Some(PRELOAD_BACKOFF)));
+        let c = PreloadCheck {
+            backed_off: true,
+            ..ready_check()
+        };
+        assert!(!should_preload(&c));
+    }
+
+    #[test]
+    fn preload_start_leaves_room_for_the_runtime_so_it_cannot_abort_itself() {
+        use crate::correction::gpu_guard::{
+            should_abort_preload, LOAD_MARGIN_BYTES, RUNTIME_OVERHEAD_BYTES,
+        };
+        let model = 5 * GB;
+        let least = model + LOAD_MARGIN_BYTES + RUNTIME_OVERHEAD_BYTES;
+        let at = |free| PreloadCheck {
+            free_vram: Some(free),
+            model_bytes: model,
+            ..ready_check()
+        };
+        // Enough for a session (model + margin) is not enough for a preload.
+        assert!(!should_preload(&at(model + LOAD_MARGIN_BYTES)));
+        assert!(!should_preload(&at(least - 1)));
+        assert!(should_preload(&at(least)));
+        // Once the model and its runtime are in VRAM, what is left at the
+        // smallest allowed start does not trip the abort rule.
+        let left = least - model - RUNTIME_OVERHEAD_BYTES;
+        assert!(!should_abort_preload(false, false, Some(left)));
     }
 
     #[test]

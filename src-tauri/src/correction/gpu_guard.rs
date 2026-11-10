@@ -7,13 +7,35 @@
 use super::local_engine::LocalEngine;
 use log::{debug, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Free VRAM required on top of the model size before loading it.
 pub const LOAD_MARGIN_BYTES: u64 = 1_536 * 1024 * 1024;
 /// Below this much free VRAM an idle model is unloaded.
 pub const IDLE_MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
+/// What llama-server needs on top of the model file once running (KV cache
+/// for `-c 4096` and compute buffers). Only a typing preload adds it to its
+/// start check, so a preload that starts never trips the low VRAM rules by
+/// itself.
+pub const RUNTIME_OVERHEAD_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// When the GPU was last needed elsewhere (a fullscreen app or low VRAM
+/// unloaded or cancelled the model). Typing preloads back off after it.
+static GPU_PRESSURE_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Records that a game, a fullscreen app or low VRAM needed the GPU.
+pub fn note_gpu_pressure() {
+    *GPU_PRESSURE_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+}
+
+/// How long ago the GPU was last needed elsewhere, if ever.
+pub fn since_gpu_pressure() -> Option<Duration> {
+    GPU_PRESSURE_AT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .map(|at| at.elapsed())
+}
 
 const WATCH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -112,6 +134,7 @@ fn tick(
         return; // nothing to unload, or a correction is in progress
     }
     if should_unload(true, false, fullscreen_app_active(), free_vram_bytes()) {
+        note_gpu_pressure();
         if engine.unload_unless_busy(session_active) {
             debug!("GPU guard: unloaded correction model (GPU needed elsewhere)");
         }

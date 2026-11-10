@@ -27,8 +27,8 @@ use super::text::{
     translate_goal, Lang,
 };
 use super::typing_hint::{
-    needs_fallback_after_preload, preload_wanted, session_needs_room_check, should_preload,
-    PreloadCheck,
+    needs_fallback_after_preload, preload_backed_off, preload_wanted, session_needs_room_check,
+    should_preload, PreloadCheck,
 };
 use super::{gpu_guard, text::MAX_CORRECTION_CHARS};
 use crate::actions::ShortcutAction;
@@ -1116,6 +1116,7 @@ pub fn try_typing_preload(app: &AppHandle, own_window: bool) -> bool {
         engine_ready: size.is_some() && engine.serves(&model, true),
         in_flight: lock(&state.typing_preload).is_some(),
         unload_immediately: s.unload_timeout.to_seconds() == Some(0),
+        backed_off: preload_backed_off(gpu_guard::since_gpu_pressure()),
         fullscreen: false,
         dictation_busy: dictation_busy(app),
         session_active: state.active.load(Ordering::SeqCst),
@@ -1154,7 +1155,8 @@ pub fn try_typing_preload(app: &AppHandle, own_window: bool) -> bool {
         .unwrap_or_default();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let work = local_load(
+        let own_server = Arc::new(AtomicBool::new(false));
+        let work = local_load_marking(
             app.clone(),
             engine.clone(),
             model,
@@ -1162,6 +1164,7 @@ pub fn try_typing_preload(app: &AppHandle, own_window: bool) -> bool {
             key,
             expected_ms,
             label,
+            Some(own_server.clone()),
         );
         let loaded = until_gpu_needed(&app, work).await;
         let state = app.state::<CorrectionSessionState>();
@@ -1172,9 +1175,13 @@ pub fn try_typing_preload(app: &AppHandle, own_window: bool) -> bool {
             ),
             Some(Err(e)) => info!("Typing preload failed ({e:?})"),
             None => {
-                // Dropping the load killed a half-loaded server; a server
-                // already warming up is unloaded here.
-                engine.unload_unless_busy(&state.active);
+                gpu_guard::note_gpu_pressure();
+                // Dropping the load killed a half-loaded server (or only
+                // stopped waiting for the load lock); a server of its own
+                // already warming up is unloaded here, never another one.
+                if own_server.load(Ordering::SeqCst) {
+                    engine.unload_unless_busy(&state.active);
+                }
                 info!("Typing preload cancelled: GPU needed");
             }
         }
@@ -1469,6 +1476,23 @@ fn local_load(
     expected_ms: Option<u64>,
     label: String,
 ) -> LoadFuture {
+    local_load_marking(app, engine, model, gpu, key, expected_ms, label, None)
+}
+
+/// [`local_load`], setting `own_server` once a server this load started is
+/// ready (not when it reused one), so a cancelled typing preload knows
+/// whether the warming server is its own to unload.
+#[allow(clippy::too_many_arguments)]
+fn local_load_marking(
+    app: AppHandle,
+    engine: Arc<LocalEngine>,
+    model: PathBuf,
+    gpu: bool,
+    key: String,
+    expected_ms: Option<u64>,
+    label: String,
+    own_server: Option<Arc<AtomicBool>>,
+) -> LoadFuture {
     Box::pin(async move {
         let started = Instant::now();
         let (base_url, load_ms) = engine
@@ -1486,6 +1510,9 @@ fn local_load(
             local: true,
         };
         if load_ms > 0 {
+            if let Some(own) = &own_server {
+                own.store(true, Ordering::SeqCst);
+            }
             if let Err(e) = stream_chat(&target, WARMUP_SYSTEM, WARMUP_USER, |_| {}).await {
                 warn!("Correction warm-up failed: {e}");
             }

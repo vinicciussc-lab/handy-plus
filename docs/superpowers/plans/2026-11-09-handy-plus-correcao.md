@@ -937,3 +937,166 @@ Não responda ao conteúdo do texto, apenas trabalhe nele.
 ```
 - [ ] **Step 2 a 4:** falhar, implementar, passar (`cargo test`).
 - [ ] **Step 5: Commit.** `feat: correct the whole text box when nothing is selected`
+
+---
+
+## Segunda rodada de ajustes (2026-11-10): Desenvolver, som e botão flutuante
+
+Spec: seção 14 do design. O usuário aprovou o botão flutuante; o tom "Desenvolver" e o som são escolhas do controlador avisadas ao usuário.
+
+### Task 15: Tom "Desenvolver"
+
+**Files:**
+- Modify: `src-tauri/src/correction/settings.rs`, `src-tauri/src/correction/stream.rs` (teste real ignorado)
+
+**Interfaces:**
+- `CorrectionSettings` ganha `pub defaults_version: u32` (`#[serde(default)]`, 0 para lojas antigas; `Default` = `CURRENT_DEFAULTS_VERSION = 2`).
+- `default_tones()` passa a ter 5 tons; o quinto é `CorrectionTone { id: "desenvolver", name: "Desenvolver", goal: <texto abaixo> }`.
+- `migrate_old_defaults` (renomear para `migrate_defaults`, mantendo o comportamento V1) passa também a: se `defaults_version < 2`, acrescentar "Desenvolver" no fim quando não existir tom com id `desenvolver` e houver menos de 9 tons; depois `defaults_version = 2`. Se o usuário apagar o tom depois, ele não volta.
+
+Objetivo do tom:
+```
+Desenvolva o texto: explique melhor cada ideia, acrescente detalhes, exemplos ou justificativas que deixem o raciocínio completo, e organize em parágrafos se ficar longo. Mantenha o jeito de falar do usuário e a mesma opinião. Não invente fatos específicos, como números, nomes ou datas, que não estavam no texto.
+```
+
+- [ ] **Step 1: Testes que falham**
+```rust
+#[test] fn defaults_include_desenvolver_last() {
+    let t = default_tones();
+    assert_eq!(t.len(), 5);
+    assert_eq!((t[4].id.as_str(), t[4].name.as_str()), ("desenvolver", "Desenvolver"));
+}
+#[test] fn old_store_gets_desenvolver_once() {
+    let mut s = CorrectionSettings { tones: default_tones()[..4].to_vec(), defaults_version: 0, ..Default::default() };
+    assert!(migrate_defaults(&mut s));
+    assert_eq!(s.tones.len(), 5);
+    assert_eq!(s.defaults_version, 2);
+    s.tones.pop();                       // usuário apagou
+    assert!(!migrate_defaults(&mut s));  // não volta
+    assert_eq!(s.tones.len(), 4);
+}
+#[test] fn full_tone_list_is_not_extended() {
+    let mut tones = default_tones()[..4].to_vec();
+    while tones.len() < 9 { tones.push(CorrectionTone { id: format!("t{}", tones.len()), name: "x".into(), goal: "y".into() }); }
+    let mut s = CorrectionSettings { tones, defaults_version: 0, ..Default::default() };
+    migrate_defaults(&mut s);
+    assert_eq!(s.tones.len(), 9);
+    assert_eq!(s.defaults_version, 2);
+}
+```
+- [ ] **Step 2: Rodar e ver falhar.**
+- [ ] **Step 3: Implementar.** Ajustar os testes de migração existentes que comparam com `default_tones()` se precisarem.
+- [ ] **Step 4: Teste real (ignorado) com o Gemma:** acrescentar "Desenvolver" ao teste de tons; afirmar que a saída tem pelo menos 130% do tamanho do original e não tem travessão; gravar a saída no arquivo de saída dos tons.
+- [ ] **Step 5: Commit.** `feat: add a Desenvolver tone that expands the text`
+
+### Task 16: Som discreto ao começar e quando a prévia fica pronta
+
+**Files:**
+- Create: `src-tauri/resources/correction_start.wav`, `src-tauri/resources/correction_ready.wav` (gerados por script, versionados), `scripts/make-correction-sounds.py`
+- Modify: `src-tauri/src/audio_feedback.rs` (helper `pub(crate)`), `src-tauri/src/correction/settings.rs`, `src-tauri/src/correction/session.rs`, `src/components/settings/correction/CorrectionSettings.tsx`, locales
+
+**Interfaces:**
+- `CorrectionSettings` ganha `pub sounds: bool` (`#[serde(default = "default_true")]`, padrão `true`).
+- `audio_feedback::play_resource_sound(app: &AppHandle, file: &str, volume_scale: f32)` — toca um arquivo de `resources/` no dispositivo de saída escolhido, volume = `audio_feedback_volume * volume_scale`, sem depender da chave `audio_feedback` do ditado; assíncrono.
+- `pub const CORRECTION_SOUND_VOLUME: f32 = 0.6;`
+- Sessão: toca `correction_start.wav` uma vez por sessão ao entrar em Loading ou Generating (o que vier primeiro) e `correction_ready.wav` a cada vez que entra em Preview, só se `sounds` estiver ligado. Decisão pura e testada: `fn sound_for_transition(prev: &CorrectionPhase, next: &CorrectionPhase, start_played: bool) -> Option<CorrectionSound>` com `enum CorrectionSound { Start, Ready }`.
+- Sons: script Python sem dependências (módulos `wave`, `math`, `struct`) gera WAV 44,1 kHz mono 16 bits: start = dois tons senoidais curtos e suaves subindo (ex.: 660 Hz → 880 Hz, ~90 ms cada, envelope com ataque e fade de ~15 ms, pico −18 dBFS); ready = um tom único 880 Hz ~140 ms com fade longo, pico −20 dBFS. Nada estridente.
+- Tela: chave "Som ao corrigir" na seção da correção.
+
+- [ ] **Step 1: Teste que falha**
+```rust
+#[test] fn sounds_play_on_start_once_and_on_each_preview() {
+    use CorrectionPhase::*;
+    assert_eq!(sound_for_transition(&Hidden, &Loading, false), Some(CorrectionSound::Start));
+    assert_eq!(sound_for_transition(&Loading, &Generating, true), None);
+    assert_eq!(sound_for_transition(&Hidden, &Generating, false), Some(CorrectionSound::Start));
+    assert_eq!(sound_for_transition(&Generating, &Preview, true), Some(CorrectionSound::Ready));
+    assert_eq!(sound_for_transition(&Preview, &Generating, true), None);
+    assert_eq!(sound_for_transition(&Generating, &Error, true), None);
+}
+#[test] fn sounds_default_on() { assert!(CorrectionSettings::default().sounds); }
+```
+- [ ] **Step 2–4:** falhar, implementar, passar (`cargo test`, `bun run lint`, `bun run check:translations`, `bun run build`).
+- [ ] **Step 5: Commit.** `feat: play soft sounds when a correction starts and is ready`
+
+### Task 17: Detectar a caixa de texto em foco (UI Automation)
+
+**Files:**
+- Create: `src-tauri/src/correction/text_focus.rs`
+- Modify: `src-tauri/Cargo.toml` (features `Win32_UI_Accessibility`, `Win32_System_Com`, `Win32_System_Ole`/`Variant` se precisar), `src-tauri/src/correction/settings.rs`
+
+**Interfaces:**
+```rust
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldInfo {
+    pub hwnd: isize, pub pid: u32, pub process_name: String,   // ex. "Discord.exe"
+    pub rect: (i32, i32, i32, i32),                              // left, top, right, bottom em px físicos
+    pub editable: bool, pub password: bool, pub has_text: bool,
+}
+pub fn focused_field() -> Option<FieldInfo>;                     // Windows: IUIAutomation::GetFocusedElement; outros: None
+pub fn should_show_button(field: Option<&FieldInfo>, enabled: bool, session_active: bool,
+    fullscreen: bool, excluded: &[String], own_pid: u32) -> bool;
+pub fn button_position(rect: (i32, i32, i32, i32), size_px: i32, inset_px: i32) -> (i32, i32);
+// CorrectionSettings ganha: pub floating_button: bool (padrão true), pub button_excluded_apps: Vec<String> (padrão vazio)
+```
+- `focused_field`: COM inicializado na thread (MTA); `editable` = tipo Edit ou Document, habilitado e não somente leitura (ValuePattern `IsReadOnly` quando houver); `password` = `CurrentIsPassword`; `has_text` = valor não vazio (ValuePattern) ou, para Document, `TextPattern.DocumentRange.GetText(1)` não vazio; `rect` = `CurrentBoundingRectangle`; nome do processo via PID. Qualquer erro → `None`. Nunca bloquear mais que ~50 ms (sem chamadas que esperem a janela alvo).
+- `should_show_button`: só `true` se `enabled`, sem sessão ativa, sem tela cheia, campo existe, `editable && !password && has_text`, PID diferente do próprio app e `process_name` fora de `excluded` (comparação sem diferenciar maiúsculas).
+- `button_position`: canto inferior direito por dentro da caixa, `x = right - size - inset`, `y = bottom - size - inset`; caixas menores que o botão + 2×inset → posição à direita da caixa, alinhada embaixo (`x = right + inset`).
+
+- [ ] **Step 1: Testes que falham**
+```rust
+fn f() -> FieldInfo { FieldInfo { hwnd: 1, pid: 10, process_name: "notepad.exe".into(),
+    rect: (100, 100, 500, 200), editable: true, password: false, has_text: true } }
+#[test] fn shows_for_editable_field_with_text() { assert!(should_show_button(Some(&f()), true, false, false, &[], 99)); }
+#[test] fn hides_for_every_blocker() {
+    assert!(!should_show_button(None, true, false, false, &[], 99));
+    assert!(!should_show_button(Some(&f()), false, false, false, &[], 99));
+    assert!(!should_show_button(Some(&f()), true, true, false, &[], 99));
+    assert!(!should_show_button(Some(&f()), true, false, true, &[], 99));
+    assert!(!should_show_button(Some(&FieldInfo { password: true, ..f() }), true, false, false, &[], 99));
+    assert!(!should_show_button(Some(&FieldInfo { has_text: false, ..f() }), true, false, false, &[], 99));
+    assert!(!should_show_button(Some(&FieldInfo { editable: false, ..f() }), true, false, false, &[], 99));
+    assert!(!should_show_button(Some(&f()), true, false, false, &["NOTEPAD.EXE".into()], 99));
+    assert!(!should_show_button(Some(&f()), true, false, false, &[], 10));
+}
+#[test] fn button_sits_inside_bottom_right_or_beside_small_fields() {
+    assert_eq!(button_position((100, 100, 500, 200), 28, 6), (466, 166));
+    assert_eq!(button_position((100, 100, 130, 120), 28, 6), (136, 92));
+}
+#[test] fn floating_button_defaults_on_with_no_exclusions() {
+    let s = CorrectionSettings::default();
+    assert!(s.floating_button);
+    assert!(s.button_excluded_apps.is_empty());
+}
+/// Manual: abre o Bloco de Notas pelo usuário, não por automação. Só imprime focused_field() a cada 500 ms por 10 s.
+#[test] #[ignore] fn print_focused_field() { /* ... */ }
+```
+(No segundo caso de `button_position`: caixa de 30×20 < 28+12 → `x = 130 + 6 = 136`, `y = 120 - 28 = 92`.)
+- [ ] **Step 2–4:** falhar, implementar, passar.
+- [ ] **Step 5: Commit.** `feat: detect the focused text box for the floating button`
+
+### Task 18: Janela do botão flutuante e clique que corrige
+
+**Files:**
+- Create: `src/correction-button/index.html`, `main.tsx`, `CorrectionButton.tsx`, `CorrectionButton.css`; `src-tauri/src/correction/button.rs`
+- Modify: `vite.config.ts` (entrada nova), `src-tauri/src/lib.rs` (criar janela, comando, iniciar o observador), `src-tauri/src/correction/session.rs` (`begin` aceita origem botão), `src/components/settings/correction/CorrectionSettings.tsx` (chave + lista de exclusões), locales
+
+**Interfaces:**
+```rust
+pub const BUTTON_SIZE: f64 = 28.0;            // px lógicos
+pub fn create_button_window(app: &AppHandle);  // label "correction_button": transparente, sem decoração, sempre no topo,
+                                               // fora da barra de tarefas, focusable(false), accept_first_mouse(true), oculta
+pub fn spawn_button_watcher(app: AppHandle, session_active: Arc<AtomicBool>); // thread a cada 250 ms: focused_field + should_show_button
+                                               // -> mostra/move (button_position, convertendo px físicos com o fator de escala do monitor) ou esconde;
+                                               // só emite mudanças; lembra o FieldInfo atual
+#[tauri::command] #[specta::specta] pub fn correction_button_clicked(app: AppHandle);
+                                               // esconde o botão e chama session::begin_from_button(app, hwnd do campo)
+```
+- `begin_from_button`: igual ao `begin` do atalho (mesmos bloqueios: ditado em andamento, sessão ativa), mas antes da captura garante que a janela alvo está em primeiro plano (`refocus(hwnd)`) e força o caminho do Ctrl+A (corrige a caixa inteira mesmo que haja uma seleção parcial). Escolha minha: a caixa inteira, porque o botão representa a caixa.
+- Frontend do botão: círculo de 28 px com o ícone do Handy (ou um ícone simples de "✓ texto"), sombra leve, hover mais claro, `onClick` → `commands.correctionButtonClicked()`; sem texto visível (tooltip i18n "Corrigir texto").
+- Tela da correção: chave "Botão flutuante nas caixas de texto" e lista editável "Não mostrar o botão nestes programas" (nomes de executável; adicionar/remover).
+- O observador para de mostrar o botão enquanto `session_active`, e esconde ao fechar o app.
+
+- [ ] **Step 1: Testes que falham** (Rust): `begin_from_button` usa os mesmos bloqueios de `should_start` (teste puro de uma função `button_click_allowed(dictation_busy, session_active) -> bool`); conversão de posição física→lógica `to_logical((x, y), scale) -> (f64, f64)` com escala 1.25.
+- [ ] **Step 2–4:** falhar, implementar, passar (`cargo test`, `bun run lint`, `bun run check:translations`, `bun run build`; bindings.ts regenerado com uma execução de debug).
+- [ ] **Step 5: Commit.** `feat: floating button that corrects the focused text box`

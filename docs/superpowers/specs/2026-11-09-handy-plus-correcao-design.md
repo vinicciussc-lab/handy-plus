@@ -184,3 +184,27 @@ Para o usuário conferir. Todas foram tomadas por mim durante a escrita e podem 
 ## 13. Arrumação depois
 
 Quando o Handy Plus estiver funcionando, o Writing Tools e a ponte criados durante os testes podem ser removidos: `%LOCALAPPDATA%\Programs\WritingTools` (inclui a ponte em `ponte\`). O modelo `gemma4:e4b` no Ollama também pode ser apagado, se o usuário não usar o Ollama para outra coisa.
+
+## 14. Adições depois dos testes do usuário (2026-11-10)
+
+Aprovadas pelo usuário em conversa, depois de testar a primeira versão.
+
+### Painel e tons (já construídos)
+- Painel maior (640 × 420), setas ↑↓ para rolar, Tab alterna Corrigido / Mudanças / Original (Corrigido limpo é o padrão).
+- Regras compartilhadas passam a permitir reescrever quando o objetivo pede; "Mais formal", "Mais curto" e "Melhorar argumentos" mudam o texto de forma visível. Tons salvos com o texto antigo padrão são atualizados sozinhos; tons editados pelo usuário nunca.
+- Atalho sem seleção: se nada estiver selecionado, pega o texto inteiro da caixa (Ctrl+A).
+
+### Tom "Desenvolver"
+O usuário pediu uma forma de "estender mais o texto". Escolha minha (avisada ao usuário, que não corrigiu): um quinto tom, **Desenvolver**, que deixa o texto mais longo explicando melhor as ideias, com detalhes, exemplos ou justificativas, mantendo o jeito de falar e a opinião do usuário e sem inventar fatos específicos. Entra para quem já usa o app, a menos que a lista já tenha 9 tons.
+
+### Som discreto
+O usuário ouve um "tique-tique" durante a geração mesmo com o som desligado: é o ruído elétrico da placa de vídeo (coil whine), não um som do app. Ele pediu um efeito sonoro suave. Escolha minha: um som curto e suave quando a correção começa e outro quando a prévia fica pronta; sem som contínuo. Usa o volume dos sons do Handy (um pouco mais baixo), com uma opção própria de ligar e desligar na tela da correção (ligada por padrão).
+
+### Botão flutuante
+Aprovado pelo usuário com esta descrição:
+- Ao clicar numa caixa de texto de um programa comum (navegador, Bloco de Notas, Office, WhatsApp, Discord), aparece um botãozinho redondo do Handy Plus no canto inferior direito da caixa, **só quando a caixa já tem texto**.
+- Um clique corrige o texto inteiro da caixa com o painel de sempre (mesmo fluxo do atalho sem seleção). Clicar no botão não tira o foco da caixa.
+- Some quando o foco sai da caixa e enquanto uma correção está aberta.
+- Nunca aparece em jogos nem em programas em tela cheia (o mesmo detector da placa de vídeo), nem em campos de senha, nem nas janelas do próprio Handy Plus.
+- Nas configurações da correção: chave para ligar e desligar (ligado por padrão) e uma lista de programas (nome do executável, por exemplo `Discord.exe`) onde ele nunca aparece.
+- Limite conhecido: depende da acessibilidade do Windows (UI Automation); em alguns apps pode não aparecer ou aparecer fora do lugar. O atalho continua funcionando em qualquer lugar.

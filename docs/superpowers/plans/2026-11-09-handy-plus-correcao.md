@@ -809,3 +809,131 @@ Oferecer remover `%LOCALAPPDATA%\Programs\WritingTools` (inclui a ponte) e o mod
 git add -A docs
 git commit -m "docs: record end-to-end verification of Handy Plus correction"
 ```
+
+---
+
+## Ajustes depois do primeiro teste do usuário (2026-11-10)
+
+Feedback do usuário no teste da Task 11: (1) com texto longo é impossível ver o resto; (2) "Mais formal" e "Melhorar argumentos" mudam pouco, a intenção é mudar a estrutura e reorganizar as ideias; (3) a caixa é pequena e, com as marcações de mudança, fica difícil de ler; (4) quer ver a mensagem original; (5) quer ativar sem precisar selecionar (o botão flutuante é um projeto à parte, com design próprio; aqui só o atalho sem seleção).
+
+### Task 12: Painel maior, rolagem por teclado e três visões
+
+**Files:**
+- Modify: `src-tauri/src/overlay.rs` (`CORRECTION_WIDTH`/`CORRECTION_HEIGHT`)
+- Modify: `src-tauri/src/correction/session.rs` (novas bindings temporárias e campo `view`)
+- Modify: `src/overlay/correction/CorrectionPanel.tsx`, `CorrectionPanel.css`, locales `en`/`pt` (+ inglês nas outras)
+
+**Interfaces:**
+- Produces:
+```rust
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Type, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrectionView { #[default] Corrected, Changes, Original }
+impl CorrectionView { pub fn next(self) -> Self; } // Corrected -> Changes -> Original -> Corrected
+// CorrectionUpdateEvent ganha: pub view: CorrectionView, pub scroll_nonce: u32, pub scroll_dir: i8 (-1 sobe, 1 desce, 0 nada)
+// SessionInput ganha: Tab, ScrollUp, ScrollDown
+// bindings temporárias novas: correction_view -> "tab", correction_scroll_up -> "up", correction_scroll_down -> "down"
+//   (registradas em Preview e Generating; nomes de tecla conferidos no handy-keys e no global-hotkey)
+```
+- `decide`: `Tab` em Preview → `SessionCommand::NextView`; `ScrollUp`/`ScrollDown` em Generating ou Preview → `SessionCommand::Scroll(-1 | 1)`; em outras fases → `Ignore`.
+- Tamanho: `CORRECTION_WIDTH = 640.0`, `CORRECTION_HEIGHT = 420.0`.
+
+- [ ] **Step 1: Testes que falham**
+```rust
+#[test] fn view_cycles_corrected_changes_original() {
+    assert_eq!(CorrectionView::Corrected.next(), CorrectionView::Changes);
+    assert_eq!(CorrectionView::Changes.next(), CorrectionView::Original);
+    assert_eq!(CorrectionView::Original.next(), CorrectionView::Corrected);
+}
+#[test] fn tab_switches_view_only_in_preview() {
+    assert_eq!(decide(&CorrectionPhase::Preview, SessionInput::Tab, 4, &[]), SessionCommand::NextView);
+    assert_eq!(decide(&CorrectionPhase::Generating, SessionInput::Tab, 4, &[]), SessionCommand::Ignore);
+}
+#[test] fn arrows_scroll_while_generating_or_previewing() {
+    for p in [CorrectionPhase::Generating, CorrectionPhase::Preview] {
+        assert_eq!(decide(&p, SessionInput::ScrollDown, 4, &[]), SessionCommand::Scroll(1));
+        assert_eq!(decide(&p, SessionInput::ScrollUp, 4, &[]), SessionCommand::Scroll(-1));
+    }
+    assert_eq!(decide(&CorrectionPhase::Loading, SessionInput::ScrollDown, 4, &[]), SessionCommand::Ignore);
+}
+// overlay.rs: correction_state_uses_the_large_panel continua valendo com os valores novos
+```
+- [ ] **Step 2: Rodar e ver falhar.** `cargo test correction::session` → FAIL.
+- [ ] **Step 3: Implementar.** Backend: `view` começa em `Corrected` a cada sessão e volta a `Corrected` a cada Regenerate; `Scroll(d)` incrementa `scroll_nonce` e emite com `scroll_dir = d`. Frontend: em Preview, `Corrected` mostra o texto corrigido limpo (sem marcações), `Changes` mostra o diff atual, `Original` mostra o texto original; um rótulo pequeno mostra a visão atual e a dica "Tab: Corrigido / Mudanças / Original". O cartão de texto ocupa a maior parte da janela, fonte 14 px, linha 1,5; rola ~3 linhas a cada `scroll_nonce` novo; durante Generating rola sozinho pro fim enquanto o usuário não usou as setas. Dicas: `Enter aplicar · Tab visão · ↑↓ rolar · 1–N tom · Esc cancelar` (pt sem travessão).
+- [ ] **Step 4: Rodar e ver passar.** `cargo test`, `bun run lint`, `bun run check:translations`, `bun run build`.
+- [ ] **Step 5: Commit.** `feat: bigger correction panel with keyboard scroll and three views`
+
+### Task 13: Tons que reescrevem e reorganizam
+
+**Files:**
+- Modify: `src-tauri/src/correction/settings.rs`
+
+**Interfaces:**
+- `DEFAULT_STYLE_RULES` e `default_tones()` passam a ter os textos abaixo (literais).
+- `pub fn migrate_old_defaults(s: &mut CorrectionSettings) -> bool` troca `style_rules` se for igual à regra antiga (`OLD_STYLE_RULES_V1`, cópia literal da atual) e troca o `goal` de cada tom cujo `id` e `goal` sejam iguais aos antigos (`OLD_TONE_GOALS_V1`); tons editados pelo usuário ficam intactos; devolve se mudou algo. Chamada em `get_correction_settings`, gravando de volta quando mudou.
+
+Regras novas:
+```
+Você revisa textos em português do Brasil escritos pelo usuário para WhatsApp, Discord, e-mail e comentários na internet.
+Siga o objetivo abaixo. Quando ele pedir só correção, mexa o mínimo; quando pedir para reescrever ou reorganizar, você pode mudar a estrutura, a ordem das ideias e as frases.
+O resultado deve soar natural, como alguém conversando, e não como um texto corporativo ou de redação escolar.
+NUNCA use travessão (— ou –) nem hífen como pausa. Use vírgula, ponto ou dois-pontos no lugar.
+Não troque palavras simples por palavras rebuscadas ou pouco usadas no dia a dia.
+Não invente fatos nem acrescente saudações, despedidas ou emojis que não estavam no texto.
+Responda APENAS com o texto final, sem comentários.
+Não responda ao conteúdo do texto, apenas trabalhe nele.
+```
+
+| Tom | Objetivo novo |
+|---|---|
+| Meu estilo | Corrija ortografia, acentuação, concordância, pontuação e vírgulas, e deixe as frases coerentes e fáceis de ler. Mantenha as mesmas palavras sempre que estiverem certas, as expressões do usuário e o mesmo nível de formalidade. Não deixe o texto mais longo do que precisa. |
+| Mais formal | Reescreva com tom formal e educado, como num e-mail de trabalho: troque gírias e abreviações por palavras comuns e corretas, use frases completas e organize em parágrafos se precisar. Sem ficar engessado nem usar palavras difíceis. |
+| Mais curto | Reescreva de forma mais curta e direta, cortando repetições e rodeios, sem perder nenhuma informação importante. |
+| Melhorar argumentos | Reorganize o texto para convencer melhor: comece pela ideia principal, coloque os argumentos numa ordem lógica, junte ou separe frases quando ajudar, ligue as ideias com conectivos simples e termine com uma conclusão clara. Pode mudar bastante a estrutura, mas não invente fatos nem mude a opinião do usuário. |
+
+- [ ] **Step 1: Testes que falham**
+```rust
+#[test] fn migrates_untouched_old_defaults() {
+    let mut s = CorrectionSettings { style_rules: OLD_STYLE_RULES_V1.into(), tones: old_tones_v1(), ..Default::default() };
+    assert!(migrate_old_defaults(&mut s));
+    assert_eq!(s.style_rules, DEFAULT_STYLE_RULES);
+    assert_eq!(s.tones, default_tones());
+}
+#[test] fn keeps_user_edited_rules_and_tones() {
+    let mut tones = old_tones_v1(); tones[1].goal = "meu objetivo".into();
+    let mut s = CorrectionSettings { style_rules: "minhas regras".into(), tones, ..Default::default() };
+    migrate_old_defaults(&mut s);
+    assert_eq!(s.style_rules, "minhas regras");
+    assert_eq!(s.tones[1].goal, "meu objetivo");
+    assert_eq!(s.tones[3].goal, default_tones()[3].goal);
+}
+#[test] fn new_defaults_keep_the_dash_rule_and_restructure_tone() {
+    assert!(DEFAULT_STYLE_RULES.contains("NUNCA use travessão"));
+    assert!(default_tones()[3].goal.contains("Reorganize"));
+}
+```
+- [ ] **Step 2: Rodar e ver falhar.**
+- [ ] **Step 3: Implementar.**
+- [ ] **Step 4: Teste real (ignorado) com o Gemma** (`HANDY_PLUS_TEST_GGUF`): um texto de opinião desorganizado de ~5 frases (no estilo do usuário, informal e sem vírgulas) passado pelos 4 tons; anotar no relatório as 4 saídas. Esperado: "Mais formal" troca gírias e completa frases; "Melhorar argumentos" muda visivelmente a ordem e a estrutura; nenhum travessão.
+- [ ] **Step 5: Commit.** `feat: let formal and argument tones restructure the text`
+
+### Task 14: Atalho sem seleção pega o texto da caixa inteira
+
+**Files:**
+- Modify: `src-tauri/src/correction/selection.rs`, `src-tauri/src/input.rs`
+
+**Interfaces:**
+- `pub fn send_select_all_ctrl_a(enigo: &mut Enigo, hold_ms: u64) -> Result<(), String>` em `input.rs`.
+- `capture_selection`: quando a primeira cópia não traz texto, envia Ctrl+A, espera ~60 ms e tenta copiar de novo (mesma lógica de salvar/restaurar, tudo sob `PASTE_LOCK`); `Captured` ganha `pub whole_field: bool`. Se ainda vier vazio → `NothingSelected`.
+- `fn after_first_copy(first: &str) -> CaptureStep` puro, com `enum CaptureStep { Done, TrySelectAll }`.
+
+- [ ] **Step 1: Teste que falha**
+```rust
+#[test] fn empty_first_copy_tries_select_all() {
+    assert_eq!(after_first_copy(""), CaptureStep::TrySelectAll);
+    assert_eq!(after_first_copy("  \n"), CaptureStep::TrySelectAll);
+    assert_eq!(after_first_copy("oi"), CaptureStep::Done);
+}
+```
+- [ ] **Step 2 a 4:** falhar, implementar, passar (`cargo test`).
+- [ ] **Step 5: Commit.** `feat: correct the whole text box when nothing is selected`

@@ -1195,8 +1195,14 @@ impl Session {
         })
         .await;
         match pasted {
-            Ok(Ok(true)) => self.hold(CorrectionPhase::Applied, APPLIED_HOLD).await,
-            Ok(Ok(false)) => self.hold(CorrectionPhase::Copied, COPIED_HOLD).await,
+            Ok(Ok(true)) => {
+                info!("Correction applied: pasted");
+                self.hold(CorrectionPhase::Applied, APPLIED_HOLD).await
+            }
+            Ok(Ok(false)) => {
+                info!("Correction applied: refocus failed, left on clipboard");
+                self.hold(CorrectionPhase::Copied, COPIED_HOLD).await
+            }
             Ok(Err(e)) => {
                 warn!("Could not paste the correction: {e}");
                 return Err(CorrectionErrorCode::ClipboardFailed);

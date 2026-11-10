@@ -94,6 +94,14 @@ pub fn should_unload(
     fullscreen || free.is_some_and(|f| f < IDLE_MIN_FREE_BYTES)
 }
 
+/// Whether a typing preload still loading should be dropped because a game,
+/// a fullscreen app or low VRAM needs the GPU. The watcher only sees ready
+/// models, so the preload checks this itself; a session that joined the load
+/// keeps it.
+pub fn should_abort_preload(session_active: bool, fullscreen: bool, free: Option<u64>) -> bool {
+    should_unload(true, session_active, fullscreen, free)
+}
+
 /// One watcher pass.
 fn tick(
     engine: &LocalEngine,
@@ -162,6 +170,19 @@ mod tests {
         assert!(has_room(Some(7 * gb), 5 * gb));
         assert!(!has_room(Some(6 * gb), 5 * gb));
         assert!(has_room(None, 5 * gb)); // sem NVML não bloqueia
+    }
+
+    #[test]
+    fn typing_preload_stops_for_a_game_unless_a_session_joined() {
+        let gb = 1024u64.pow(3);
+        assert!(should_abort_preload(false, true, Some(8 * gb)));
+        assert!(should_abort_preload(false, false, Some(gb / 2)));
+        assert!(
+            !should_abort_preload(true, true, Some(0)),
+            "a session joined"
+        );
+        assert!(!should_abort_preload(false, false, Some(8 * gb)));
+        assert!(!should_abort_preload(false, false, None), "no NVML");
     }
 
     #[test]

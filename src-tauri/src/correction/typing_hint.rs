@@ -70,6 +70,13 @@ impl HintTracker {
         }
     }
 
+    /// The model was unloaded: every window may preload again, after typing
+    /// enough keys anew.
+    pub fn engine_unloaded(&mut self) {
+        self.preloaded.clear();
+        self.preload_keys = 0;
+    }
+
     /// Window the keys are being counted in.
     pub fn window(&self) -> Option<isize> {
         self.window
@@ -153,6 +160,13 @@ pub fn session_needs_room_check(served: bool, preloading_same_model: bool) -> bo
     !served && !preloading_same_model
 }
 
+/// A session that joined a typing preload, once that preload is over: if the
+/// model is not served (the preload failed or was cancelled), the session's
+/// own load needs GPU room like any other, or the fallback prompt.
+pub fn needs_fallback_after_preload(serving: bool, free: Option<u64>, model_bytes: u64) -> bool {
+    !serving && !super::gpu_guard::has_room(free, model_bytes)
+}
+
 #[cfg(windows)]
 mod runtime {
     use super::{HintTracker, HINT_SHOW_MS};
@@ -174,6 +188,8 @@ mod runtime {
         tracker: HintTracker,
         /// When the hint went up, while it is up.
         shown_at: Option<u64>,
+        /// The engine had a ready model at the last poll.
+        engine_loaded: bool,
     }
 
     fn lock(m: &Mutex<Hint>) -> MutexGuard<'_, Hint> {
@@ -220,7 +236,16 @@ mod runtime {
     /// Starts loading the correction model once enough keys were typed in a
     /// window (see [`super::should_preload`]); once per window.
     fn preload(app: &AppHandle, hint: &Mutex<Hint>) {
-        let Some(window) = lock(hint).tracker.preload_due() else {
+        let loaded = session::engine_loaded(app);
+        let due = {
+            let mut h = lock(hint);
+            if h.engine_loaded && !loaded {
+                h.tracker.engine_unloaded();
+            }
+            h.engine_loaded = loaded;
+            h.tracker.preload_due()
+        };
+        let Some(window) = due else {
             return;
         };
         // The user left the window without typing there: try again later.
@@ -505,6 +530,30 @@ mod tests {
         assert!(!session_needs_room_check(false, true));
         assert!(!session_needs_room_check(true, false));
         assert!(session_needs_room_check(false, false));
+    }
+
+    #[test]
+    fn a_session_rechecks_room_after_a_preload_that_did_not_finish() {
+        // The preload left the model served: reuse it, no check needed.
+        assert!(!needs_fallback_after_preload(true, Some(0), 5 * GB));
+        // It failed or was cancelled: a fresh load needs room like any other.
+        assert!(needs_fallback_after_preload(false, Some(6 * GB), 5 * GB));
+        assert!(!needs_fallback_after_preload(false, Some(16 * GB), 5 * GB));
+        assert!(!needs_fallback_after_preload(false, None, 5 * GB));
+    }
+
+    #[test]
+    fn preload_again_in_a_window_after_the_engine_unloaded() {
+        let mut t = HintTracker::default();
+        let last = type_keys(&mut t, W, HINT_MIN_KEYS, 0);
+        t.preload_checked(W, true);
+        let last = type_keys(&mut t, W, HINT_MIN_KEYS, last + 100);
+        assert_eq!(t.preload_due(), None);
+        t.engine_unloaded();
+        // The keys typed while it was loaded do not count.
+        assert_eq!(t.preload_due(), None);
+        type_keys(&mut t, W, HINT_MIN_KEYS, last + 100);
+        assert_eq!(t.preload_due(), Some(W));
     }
 
     #[test]

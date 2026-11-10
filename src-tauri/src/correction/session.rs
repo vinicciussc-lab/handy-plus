@@ -26,7 +26,10 @@ use super::text::{
     build_messages, clean_output, detect_lang, generation_progress, goal_in, load_progress,
     translate_goal, Lang,
 };
-use super::typing_hint::{preload_wanted, session_needs_room_check, should_preload, PreloadCheck};
+use super::typing_hint::{
+    needs_fallback_after_preload, preload_wanted, session_needs_room_check, should_preload,
+    PreloadCheck,
+};
 use super::{gpu_guard, text::MAX_CORRECTION_CHARS};
 use crate::actions::ShortcutAction;
 use crate::managers::audio::AudioRecordingManager;
@@ -1128,7 +1131,7 @@ pub fn try_typing_preload(app: &AppHandle, own_window: bool) -> bool {
     check.free_vram = gpu_guard::free_vram_bytes();
     if !should_preload(&check) {
         if preload_wanted(&check) {
-            info!("Typing preload skipped: not enough free GPU memory");
+            debug!("Typing preload skipped: not enough free GPU memory");
         }
         return false;
     }
@@ -1151,7 +1154,7 @@ pub fn try_typing_preload(app: &AppHandle, own_window: bool) -> bool {
         .unwrap_or_default();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let loaded = local_load(
+        let work = local_load(
             app.clone(),
             engine.clone(),
             model,
@@ -1159,22 +1162,85 @@ pub fn try_typing_preload(app: &AppHandle, own_window: bool) -> bool {
             key,
             expected_ms,
             label,
-        )
-        .await;
-        // The idle clock starts once the warm-up is done.
-        engine.touch();
-        if let Some(state) = app.try_state::<CorrectionSessionState>() {
-            *lock(&state.typing_preload) = None;
-        }
+        );
+        let loaded = until_gpu_needed(&app, work).await;
+        let state = app.state::<CorrectionSessionState>();
         match loaded {
-            Ok(_) => info!(
+            Some(Ok(_)) => info!(
                 "Typing preload finished in {} ms",
                 started.elapsed().as_millis()
             ),
-            Err(code) => info!("Typing preload failed ({code:?})"),
+            Some(Err(e)) => info!("Typing preload failed ({e:?})"),
+            None => {
+                // Dropping the load killed a half-loaded server; a server
+                // already warming up is unloaded here.
+                engine.unload_unless_busy(&state.active);
+                info!("Typing preload cancelled: GPU needed");
+            }
         }
+        // The idle clock starts once the warm-up is done.
+        engine.touch();
+        *lock(&state.typing_preload) = None;
     });
     true
+}
+
+/// How often a typing preload checks whether a game wants the GPU.
+const PRELOAD_WATCH: Duration = Duration::from_secs(1);
+
+/// Runs a typing preload's load, dropping it (`None`) as soon as a game, a
+/// fullscreen app or low VRAM needs the GPU, unless a session joined it.
+async fn until_gpu_needed(
+    app: &AppHandle,
+    mut work: LoadFuture,
+) -> Option<Result<ChatTarget, LoadError>> {
+    loop {
+        let tick = std::pin::pin!(tokio::time::sleep(PRELOAD_WATCH));
+        match select(work.as_mut(), tick).await {
+            Either::Left((loaded, _)) => return Some(loaded),
+            Either::Right(_) => {
+                if gpu_guard::should_abort_preload(
+                    session_active(app),
+                    gpu_guard::fullscreen_app_active(),
+                    gpu_guard::free_vram_bytes(),
+                ) {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// The engine has a ready model (the typing hint notices unloads with it).
+pub fn engine_loaded(app: &AppHandle) -> bool {
+    app.try_state::<Arc<LocalEngine>>()
+        .is_some_and(|e| e.is_loaded())
+}
+
+/// A session's load that joins a typing preload of `model`: waits for the
+/// preload to end, then reuses its server or, if it failed or was cancelled,
+/// loads anew only with GPU room (else [`LoadError::NoRoom`], the fallback
+/// prompt).
+fn join_typing_preload(
+    app: AppHandle,
+    engine: Arc<LocalEngine>,
+    model: PathBuf,
+    key: String,
+    size: u64,
+    expected_ms: Option<u64>,
+    label: String,
+) -> LoadFuture {
+    Box::pin(async move {
+        while typing_preload_of(&app, &model).is_some() {
+            tokio::time::sleep(TICK).await;
+        }
+        let serving = engine.serves(&model, true);
+        if needs_fallback_after_preload(serving, gpu_guard::free_vram_bytes(), size) {
+            info!("Typing preload did not finish and the GPU has no room");
+            return Err(LoadError::NoRoom);
+        }
+        local_load(app, engine, model, true, key, expected_ms, label).await
+    })
 }
 
 /// When the typing preload is loading `model`, when it started.
@@ -1339,7 +1405,26 @@ fn record_load_ms(app: &AppHandle, model: &str, ms: u64) {
 /// A local model load, with its warm-up after a cold load. Built when the
 /// panel opens so it can run while the user chooses; dropping it cancels the
 /// load (the engine's load guard kills a half-loaded server).
-type LoadFuture = Pin<Box<dyn Future<Output = Result<ChatTarget, CorrectionErrorCode>> + Send>>;
+type LoadFuture = Pin<Box<dyn Future<Output = Result<ChatTarget, LoadError>> + Send>>;
+
+/// Why a local load gave no target.
+#[derive(Debug)]
+enum LoadError {
+    Failed(CorrectionErrorCode),
+    /// A joined typing preload did not finish and the GPU has no room for a
+    /// new load: the session offers the fallback.
+    NoRoom,
+}
+
+impl LoadError {
+    /// The panel's error when no fallback prompt is possible.
+    fn code(self) -> CorrectionErrorCode {
+        match self {
+            Self::Failed(code) => code,
+            Self::NoRoom => CorrectionErrorCode::EngineFailed,
+        }
+    }
+}
 
 /// The model as the user picks: still loading, ready (or failed), or waiting
 /// for the user to choose a way out because the GPU has no room.
@@ -1350,6 +1435,10 @@ enum Preload {
         /// A server has to start (the loading bar shows).
         cold: bool,
         expected_ms: Option<u64>,
+        /// The model and its settings key, for the fallback prompt when a
+        /// joined typing preload leaves no GPU room.
+        model: PathBuf,
+        key: String,
     },
     Done(Result<ChatTarget, CorrectionErrorCode>),
     NoRoom {
@@ -1387,7 +1476,7 @@ fn local_load(
             .await
             .map_err(|e| {
                 warn!("Correction model failed to load: {e}");
-                engine_error_code(e)
+                LoadError::Failed(engine_error_code(e))
             })?;
         let target = ChatTarget {
             base_url,
@@ -1536,7 +1625,7 @@ impl Session {
     /// loading; the loading bar moves meanwhile.
     async fn wait_choice(&mut self, preload: &mut Preload) -> SessionCommand {
         enum Woke {
-            Loaded(Result<ChatTarget, CorrectionErrorCode>),
+            Loaded(Result<ChatTarget, LoadError>),
             Input(Option<SessionInput>),
             Tick,
         }
@@ -1546,6 +1635,7 @@ impl Session {
                 started,
                 cold,
                 expected_ms,
+                ..
             } = preload
             else {
                 return self.next_command(&[]).await;
@@ -1564,7 +1654,26 @@ impl Session {
                 Woke::Loaded(loaded) => {
                     self.panel.preloading = false;
                     self.panel.load_progress = (cold && loaded.is_ok()).then_some(1.0);
-                    *preload = Preload::Done(loaded);
+                    let running = std::mem::replace(
+                        preload,
+                        Preload::Done(Err(CorrectionErrorCode::EngineFailed)),
+                    );
+                    *preload = match (loaded, running) {
+                        (
+                            Err(LoadError::NoRoom),
+                            Preload::Running {
+                                model,
+                                key,
+                                expected_ms,
+                                ..
+                            },
+                        ) => Preload::NoRoom {
+                            model,
+                            key,
+                            expected_ms,
+                        },
+                        (loaded, _) => Preload::Done(loaded.map_err(LoadError::code)),
+                    };
                     emit(&self.app, &self.panel);
                 }
                 Woke::Tick => {
@@ -1732,21 +1841,21 @@ impl Session {
             self.panel.preloading = true;
             self.panel.load_progress = load_progress(0, expected_ms);
         }
-        let work = local_load(
-            self.app.clone(),
-            engine,
-            model,
-            true,
-            path,
-            expected_ms,
-            self.panel.model_label.clone(),
-        );
+        let (app, label) = (self.app.clone(), self.panel.model_label.clone());
+        let (m, k) = (model.clone(), path.clone());
+        let work = match preloading {
+            // The room check was skipped: it is redone if the preload fails.
+            Some(_) => join_typing_preload(app, engine, m, k, size, expected_ms, label),
+            None => local_load(app, engine, m, true, k, expected_ms, label),
+        };
         Ok(Preload::Running {
             work,
             // The loading bar continues from where the typing preload is.
             started: preloading.unwrap_or_else(Instant::now),
             cold,
             expected_ms,
+            model,
+            key: path,
         })
     }
 
@@ -1766,40 +1875,56 @@ impl Session {
                 started,
                 cold,
                 expected_ms,
-            } => self.finish_load(work, started, cold, expected_ms).await,
+                model,
+                key,
+            } => match self.finish_load(work, started, cold, expected_ms).await {
+                Err(LoadError::NoRoom) => self.offer_fallback(model, key, expected_ms, s).await,
+                other => other.map_err(LoadError::code),
+            },
             Preload::NoRoom {
                 model,
                 key,
                 expected_ms,
-            } => {
-                let options = fallback_options(s.fallback.is_some());
-                self.panel.fallback_options = options.clone();
-                self.enter(CorrectionPhase::NeedsFallback, options.len())
-                    .await;
-                match self.next_command(&options).await {
-                    SessionCommand::UseFallback(FallbackOption::Cloud) => {
-                        let m = s.fallback.as_ref().expect("offered only when set");
-                        self.panel.model_label = m.model.clone();
-                        cloud_target(&self.app, m).map(Some)
-                    }
-                    SessionCommand::UseFallback(FallbackOption::Cpu) => {
-                        let engine = self.engine();
-                        let cold = !engine.serves(&model, false);
-                        let work = local_load(
-                            self.app.clone(),
-                            engine,
-                            model,
-                            false,
-                            key,
-                            expected_ms,
-                            self.panel.model_label.clone(),
-                        );
-                        self.finish_load(work, Instant::now(), cold, expected_ms)
-                            .await
-                    }
-                    _ => Ok(None),
-                }
+            } => self.offer_fallback(model, key, expected_ms, s).await,
+        }
+    }
+
+    /// The GPU has no room for the model: the user picks the cloud backup,
+    /// the processor, or gives up.
+    async fn offer_fallback(
+        &mut self,
+        model: PathBuf,
+        key: String,
+        expected_ms: Option<u64>,
+        s: &CorrectionSettings,
+    ) -> Step<ChatTarget> {
+        let options = fallback_options(s.fallback.is_some());
+        self.panel.fallback_options = options.clone();
+        self.enter(CorrectionPhase::NeedsFallback, options.len())
+            .await;
+        match self.next_command(&options).await {
+            SessionCommand::UseFallback(FallbackOption::Cloud) => {
+                let m = s.fallback.as_ref().expect("offered only when set");
+                self.panel.model_label = m.model.clone();
+                cloud_target(&self.app, m).map(Some)
             }
+            SessionCommand::UseFallback(FallbackOption::Cpu) => {
+                let engine = self.engine();
+                let cold = !engine.serves(&model, false);
+                let work = local_load(
+                    self.app.clone(),
+                    engine,
+                    model,
+                    false,
+                    key,
+                    expected_ms,
+                    self.panel.model_label.clone(),
+                );
+                self.finish_load(work, Instant::now(), cold, expected_ms)
+                    .await
+                    .map_err(LoadError::code)
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1811,7 +1936,7 @@ impl Session {
         started: Instant,
         cold: bool,
         expected_ms: Option<u64>,
-    ) -> Step<ChatTarget> {
+    ) -> Result<Option<ChatTarget>, LoadError> {
         let elapsed = || started.elapsed().as_millis() as u64;
         if cold {
             self.panel.load_progress = load_progress(elapsed(), expected_ms);

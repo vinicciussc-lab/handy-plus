@@ -1268,3 +1268,50 @@ Spec: seção 16 do design.
 - i18n en + pt (sem travessão), inglês nas outras línguas.
 - [ ] `bun run lint`, `bun run check:translations`, `bun run build`; bindings regenerados.
 - [ ] Commit: `feat: style and adjustment controls in the panel and settings`
+
+---
+
+## Quinta rodada (2026-11-10)
+
+Spec: seção 17 do design.
+
+### Task 28: Ajustes exclusivos, memória das respostas, variação e sem a visão Mudanças
+
+**Files:** `src-tauri/src/correction/session.rs`, `src/overlay/correction/*`, locales
+- `CorrectionView` passa a ter só `Corrected` e `Original` (`next()` alterna); remover a visão Changes e o `diff` do painel (manter `diff.ts` só se ainda usado; senão remover com o teste).
+- Estado da sessão: `current_style: Option<usize>`, `current_adjust: Option<usize>` (no lugar de `applied_adjusts: Vec`), `lang` (Task 29 usa; aqui o idioma é sempre o original), e um cache `HashMap<ResultKey, Vec<String>>` com `ResultKey { style: Option<usize>, adjust: Option<usize>, lang: Lang }` e um índice de variação atual por chave.
+- Regras (função pura `plan_choice(state, choice) -> Plan`, testada):
+  - Escolher estilo S: se S já é o atual e não há ajuste → `NewVariation`; senão o alvo vira (S, nenhum ajuste) → `Show(cached)` se existir, senão `Generate(from original)`.
+  - Escolher ajuste A: se A já é o atual → `NewVariation`; senão o alvo vira (estilo atual, A) → cache ou `Generate(from resultado do estilo atual, ou do original se não houver estilo)`.
+  - `NewVariation` gera de novo a mesma chave a partir da mesma base e acrescenta à lista; mostra a nova.
+- `CorrectionUpdateEvent`: `current_adjust: Option<u32>` no lugar de `applied_adjusts`; o painel marca só um ajuste.
+- [ ] Testes de `plan_choice` (troca de ajuste não acumula; voltar a uma combinação usa o cache; repetir a opção atual pede variação; estilo novo zera o ajuste; ajuste sem estilo usa o original).
+- [ ] Commit: `feat: exclusive adjustments, cached results and variations`
+
+### Task 29: Chave de idioma PT ⇄ EN
+
+**Files:** `src-tauri/src/correction/{session,settings,text}.rs`, `src/overlay/correction/*`, locales
+- `enum Lang { Pt, En }`; `fn detect_lang(text: &str) -> Lang` com o crate `whatlang` (já é dependência): inglês → En, qualquer outro → Pt.
+- Sessão começa com `lang = detect_lang(original)`; `SessionInput::ToggleLang` (tecla `t` como binding temporária em Choosing/Preview, e `UiAction::ToggleLang`) troca o idioma alvo: o texto mostrado passa a ser a chave atual com o novo idioma — do cache, ou gerado traduzindo o texto da chave no idioma original com o objetivo de tradução (`TRANSLATE_GOAL_TO_EN` / `TRANSLATE_GOAL_TO_PT`, textos fixos no código, naturais, mantendo tom; o de inglês diz explicitamente que a resposta é toda em inglês e que é exceção à regra de português).
+- `CorrectionUpdateEvent` ganha `lang: Lang` e `source_lang: Lang`; o painel mostra a chave (PT / EN) com o lado ativo destacado, clicável.
+- Migração `CURRENT_DEFAULTS_VERSION = 5`: remove o tom `traduzir` se ainda tiver o objetivo padrão; se foi editado, vira ajuste comum. `default_tones()` deixa de ter Traduzir.
+- O atalho `translate_selection` abre a sessão já com o idioma virado para o oposto do detectado e gera a tradução do original (sem estilo).
+- [ ] Testes: `detect_lang` (frases pt e en do spec), migração v4→v5 (remove padrão, mantém editado, idempotente), `decide` para ToggleLang em Choosing/Preview e ignorado nas outras fases.
+- [ ] Teste real (ignorado) com o Gemma: as frases do spec traduzidas pelos objetivos novos, sem travessão.
+- [ ] Commit: `feat: language switch instead of the Traduzir adjustment`
+
+### Task 30: Captura espera a área de transferência assentar
+
+**Files:** `src-tauri/src/correction/selection.rs`
+- Depois que o texto aparece, continuar consultando a sequência da área de transferência a cada 25 ms e só ler quando ela ficar parada por `SETTLE_MS = 150` (respeitando o limite total atual). Função pura `settled(last_change_ms, now_ms) -> bool` testada.
+- `info!("Captured {} chars (whole_field={})")` sem conteúdo.
+- [ ] Commit: `fix: wait for the clipboard to settle before reading the selection`
+
+### Task 31: Pré-carregar o modelo ao digitar
+
+**Files:** `src-tauri/src/correction/{typing_hint,session,settings}.rs`, tela de configurações, locales
+- `CorrectionSettings.preload_on_typing: bool` (padrão true, default por campo).
+- O rastreador da dica (Task 23) ganha um segundo gatilho: ao atingir `HINT_MIN_KEYS` teclas numa janela (sem esperar a pausa), se `preload_on_typing`, provedor local com modelo escolhido, motor não carregado, sem tela cheia, sem ditado, sem sessão aberta e `has_room(free_vram, tamanho do modelo)`, dispara `ensure_loaded` + aquecimento em segundo plano (uma vez por janela; nunca dois ao mesmo tempo; reaproveita o carregamento se a sessão abrir no meio). O vigia da placa e o tempo de descarregar continuam valendo.
+- Função pura `should_preload(...) -> bool` testada.
+- Chave "Pré-carregar o modelo quando eu começar a digitar" na tela da correção.
+- [ ] Commit: `feat: preload the correction model while the user types`

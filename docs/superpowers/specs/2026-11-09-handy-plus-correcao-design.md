@@ -232,3 +232,15 @@ Aprovado pelo usuário depois do teste da terceira rodada.
 - **Atalho próprio de tradução** (padrão Ctrl + Shift + a tecla ao lado do Z, configurável): abre o painel já traduzindo o texto selecionado (ou a caixa inteira), sem esperar escolha.
 - Configurações: duas listas editáveis, Estilos e Ajustes (cada uma com até 9 itens; os números seguem a ordem: estilos primeiro, depois ajustes, até 9 no total para atalho por número; os demais só com clique).
 - Migração: "Meu estilo" fica; "Mais formal" vira o estilo "Formal"; "Mais curto" vira o ajuste "Encurtar"; "Desenvolver", "Traduzir" e "Melhorar argumentos" viram ajustes; entram os estilos "Descolado" e "Poético". Itens editados pelo usuário mantêm o texto e só ganham o tipo.
+
+## 17. Quinta rodada (2026-11-10): chave de idioma, ajustes exclusivos, memória, Root, pré-carregar
+
+Aprovado pelo usuário depois do teste da quarta rodada. Aplicar passou a funcionar em todos os cenários testados, menos no app Root (só o primeiro parágrafo da seleção chegou).
+
+- **Chave de idioma PT ⇄ EN no lugar do ajuste Traduzir.** O painel detecta o idioma do texto original (português ou inglês) e mostra a chave nessa posição. Virar a chave (clique ou tecla T) traduz o texto que está na tela para o outro idioma; virar de volta mostra a versão anterior sem gerar de novo. O ajuste "Traduzir" sai dos padrões (removido da loja se ainda tiver o texto padrão; se o usuário editou, fica como ajuste comum). O atalho de tradução abre o painel com a chave já virada.
+- **Ajustes exclusivos:** cada ajuste age sobre o resultado do estilo atual; só um ajuste fica marcado por vez; escolher outro troca, não soma. Escolher o ajuste já marcado de novo gera uma variação.
+- **Memória das respostas na sessão:** cada combinação gerada (estilo, ajuste, idioma) fica guardada enquanto o painel está aberto; voltar a ela mostra na hora, sem gerar. Clicar de novo na opção já selecionada (estilo ou ajuste) gera uma variação nova e passa a mostrar a nova.
+- **Sem a visão Mudanças:** ficam Corrigido e Original; Tab alterna entre as duas.
+- **Captura mais robusta (Root):** depois do Ctrl + C, esperar a área de transferência parar de mudar (~150 ms sem novas escritas, até o limite atual) antes de ler; registrar no log só o tamanho do texto capturado.
+- **Pré-carregar ao digitar:** quando o usuário digita em qualquer programa (mesmo sinal da dica de atalho, a partir de ~12 teclas) e o modelo local não está carregado, começa a carregar em segundo plano, respeitando tela cheia/jogo, ditado em andamento, falta de memória na placa e o tempo de descarregar. Chave nas configurações (ligada por padrão).
+- Explicação dada ao usuário: carregar "metade" do modelo na placa e completar depois não funciona (exigiria recarregar tudo e ficaria lento); a primeira carga e o aquecimento da placa são o custo, e depois disso o Windows mantém o arquivo em memória RAM.

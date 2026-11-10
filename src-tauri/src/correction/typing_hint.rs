@@ -127,6 +127,8 @@ mod runtime {
             || foreground != window
             || foreground.is_some_and(is_own_window)
             || !get_correction_settings(app).typing_hint
+            // Nothing would show, so the window must not count as hinted.
+            || settings::get_settings(app).overlay_style == settings::OverlayStyle::None
             || gpu_guard::fullscreen_app_active()
             || session::dictation_busy(app)
             || session::session_active(app)

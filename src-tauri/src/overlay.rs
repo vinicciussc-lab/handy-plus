@@ -693,7 +693,12 @@ pub fn show_hint_overlay(app_handle: &AppHandle, binding: String) {
     // On the main thread like every other show, so this check and the shows
     // of the other states run in order.
     let _ = app_handle.run_on_main_thread(move || {
-        if OVERLAY_IN_USE.load(Ordering::SeqCst) {
+        // A dictation sets its flag before its show reaches this thread, and
+        // a correction session is active before its panel shows.
+        if OVERLAY_IN_USE.load(Ordering::SeqCst)
+            || is_session_showing()
+            || crate::correction::session::session_active(&handle)
+        {
             return;
         }
         let _ = handle.emit_to("recording_overlay", "typing-hint", binding);
@@ -703,15 +708,38 @@ pub fn show_hint_overlay(app_handle: &AppHandle, binding: String) {
     });
 }
 
-/// Hides the typing hint, unless something else has replaced it.
+/// The hint may be hidden only while it is still the latest thing shown:
+/// `hint_gen` is its show generation (`u64::MAX` once hidden), `show_gen` the
+/// overlay's current one.
+fn hint_hide_allowed(hint_gen: u64, show_gen: u64) -> bool {
+    hint_gen != u64::MAX && hint_gen == show_gen
+}
+
+/// Hides the typing hint, unless something else has replaced it. Runs on the
+/// main thread, where every show runs, so the check and the shows are in
+/// order. Unlike `hide_recording_overlay` it never touches the dictation
+/// session flags, which a dictation starting right now may have just set.
 pub fn hide_hint_overlay(app_handle: &AppHandle) {
-    let shown = OVERLAY_SHOW_GENERATION.load(Ordering::SeqCst);
-    if OVERLAY_HINT_GENERATION
-        .compare_exchange(shown, u64::MAX, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
-        hide_recording_overlay(app_handle);
-    }
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        let shown = OVERLAY_SHOW_GENERATION.load(Ordering::SeqCst);
+        if !hint_hide_allowed(OVERLAY_HINT_GENERATION.load(Ordering::SeqCst), shown) {
+            return;
+        }
+        OVERLAY_HINT_GENERATION.store(u64::MAX, Ordering::SeqCst);
+        let Some(overlay_window) = handle.get_webview_window("recording_overlay") else {
+            return;
+        };
+        let _ = overlay_window.emit("hide-overlay", ());
+        // Same fade delay as `hide_recording_overlay`; skipped if anything
+        // shows in the meantime.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if OVERLAY_SHOW_GENERATION.load(Ordering::SeqCst) == shown {
+                let _ = overlay_window.hide();
+            }
+        });
+    });
 }
 
 /// The overlay shows a dictation, a notice or the correction panel.
@@ -929,6 +957,16 @@ mod tests {
             overlay_dimensions("recording"),
             (OVERLAY_WIDTH, OVERLAY_HEIGHT)
         );
+    }
+
+    #[test]
+    fn hint_hides_only_while_it_is_the_latest_show() {
+        assert!(hint_hide_allowed(7, 7));
+        // Something newer (dictation, notice, correction panel) showed.
+        assert!(!hint_hide_allowed(7, 8));
+        // Already hidden.
+        assert!(!hint_hide_allowed(u64::MAX, 7));
+        assert!(!hint_hide_allowed(u64::MAX, u64::MAX));
     }
 
     #[test]

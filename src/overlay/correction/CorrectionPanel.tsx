@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type {
   CorrectionErrorCode,
   CorrectionUpdateEvent,
+  CorrectionView,
   FallbackOption,
 } from "@/bindings";
 import i18n from "@/i18n";
@@ -31,6 +32,16 @@ const FALLBACK_KEYS: Record<FallbackOption, string> = {
   cloud: "overlay.correction.cloud",
   cpu: "overlay.correction.cpu",
 };
+
+const VIEW_KEYS: Record<CorrectionView, string> = {
+  corrected: "overlay.correction.viewCorrected",
+  changes: "overlay.correction.viewChanges",
+  original: "overlay.correction.viewOriginal",
+};
+const VIEWS: CorrectionView[] = ["corrected", "changes", "original"];
+
+// Three lines of the 14px / 1.5 text per arrow key press.
+const SCROLL_STEP = 3 * 14 * 1.5;
 
 const CHECK = "✓";
 
@@ -82,18 +93,43 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
   visible,
 }) => {
   const { t } = useTranslation();
-  const streamRef = useRef<HTMLDivElement>(null);
-  const streamed = update?.phase === "generating" ? update.text : "";
+  const textRef = useRef<HTMLDivElement>(null);
+  const userScrolled = useRef(false);
+  const lastNonce = useRef(0);
+  const phase = update?.phase;
+  const view = update?.view ?? "corrected";
+  const nonce = update?.scroll_nonce ?? 0;
+  const scrollDir = update?.scroll_dir ?? 0;
+  const streamed = phase === "generating" ? (update?.text ?? "") : "";
 
-  // Keep the newest streamed text in view inside the card.
+  // Keep the newest streamed text in view until the user scrolls by hand.
   useEffect(() => {
-    const el = streamRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [streamed]);
+    if (phase !== "generating") {
+      userScrolled.current = false;
+      return;
+    }
+    const el = textRef.current;
+    if (el && !userScrolled.current) el.scrollTop = el.scrollHeight;
+  }, [phase, streamed]);
+
+  // Start at the top when the preview opens or the view changes.
+  useEffect(() => {
+    if (phase === "preview" && textRef.current) textRef.current.scrollTop = 0;
+  }, [phase, view]);
+
+  // One arrow key press = one new nonce. The overlay can't take the wheel or
+  // focus, so the keys arrive from the backend.
+  useEffect(() => {
+    if (nonce === lastNonce.current) return;
+    lastNonce.current = nonce;
+    if (nonce === 0 || (phase !== "generating" && phase !== "preview")) return;
+    if (phase === "generating") userScrolled.current = true;
+    textRef.current?.scrollBy({ top: scrollDir * SCROLL_STEP });
+  }, [nonce, scrollDir, phase]);
 
   if (!update || update.phase === "hidden") return null;
 
-  const { phase, tones, model_label: modelLabel } = update;
+  const { tones, model_label: modelLabel } = update;
   const toneIndex = update.tone_index;
   const toneModel = [tones[toneIndex], modelLabel].filter(Boolean).join(" · ");
 
@@ -128,29 +164,43 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
             label={t("overlay.correction.generating")}
             value={update.gen_progress}
           />
-          <div className="cor-stream cor-scroll" ref={streamRef}>
+          <div className="cor-stream cor-scroll" ref={textRef}>
             {update.text}
             <span className="cor-caret" />
+          </div>
+          <div className="cor-hint">
+            {keyHint("↑↓", t("overlay.correction.scroll"))}
+            {" · "}
+            {keyHint("Esc", t("overlay.correction.cancel"))}
           </div>
         </>
       );
       pill = toneModel;
       break;
     case "preview": {
-      const parts = diffWords(update.original, update.text);
       card = (
         <>
+          <div className="cor-viewbar">
+            {VIEWS.map((v) => (
+              <span key={v} className={`cor-view ${v === view ? "on" : ""}`}>
+                {t(VIEW_KEYS[v])}
+              </span>
+            ))}
+          </div>
           <div className="cor-grid">
-            <div className="cor-text cor-scroll">
-              {parts.map((p, i) =>
-                p.kind === "same" ? (
-                  <React.Fragment key={i}>{p.text}</React.Fragment>
-                ) : (
-                  <span key={i} className={`cor-${p.kind}`}>
-                    {p.text}
-                  </span>
-                ),
-              )}
+            <div className="cor-text cor-scroll" ref={textRef}>
+              {view === "corrected" && update.text}
+              {view === "original" && update.original}
+              {view === "changes" &&
+                diffWords(update.original, update.text).map((p, i) =>
+                  p.kind === "same" ? (
+                    <React.Fragment key={i}>{p.text}</React.Fragment>
+                  ) : (
+                    <span key={i} className={`cor-${p.kind}`}>
+                      {p.text}
+                    </span>
+                  ),
+                )}
             </div>
             {tones.length > 0 && (
               <div className="cor-tones cor-scroll">
@@ -165,6 +215,10 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
           </div>
           <div className="cor-hint">
             {keyHint("Enter", t("overlay.correction.apply"))}
+            {" · "}
+            {keyHint("Tab", t("overlay.correction.view"))}
+            {" · "}
+            {keyHint("↑↓", t("overlay.correction.scroll"))}
             {tones.length > 1 && (
               <>
                 {" · "}

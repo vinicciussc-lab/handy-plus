@@ -1246,7 +1246,31 @@ export type CorrectionTone = { id: string; name: string; goal: string }
 /**
  * Everything the correction panel shows. Sent whenever it changes.
  */
-export type CorrectionUpdateEvent = { phase: CorrectionPhase; original: string; text: string; load_progress: number | null; gen_progress: number | null; tones: string[]; tone_index: number; model_label: string; elapsed_ms: number | null; error: CorrectionErrorCode | null; fallback_options: FallbackOption[] }
+export type CorrectionUpdateEvent = { phase: CorrectionPhase; original: string; text: string; load_progress: number | null; gen_progress: number | null; tones: string[]; tone_index: number; model_label: string; elapsed_ms: number | null; error: CorrectionErrorCode | null; fallback_options: FallbackOption[]; view: CorrectionView; 
+/**
+ * Counts the scroll key presses; the panel scrolls once per new value.
+ */
+scroll_nonce: number; 
+/**
+ * Direction of the last scroll: -1 up, 1 down, 0 none yet.
+ */
+scroll_dir: number }
+/**
+ * Which text the preview shows; Tab cycles through them.
+ */
+export type CorrectionView = 
+/**
+ * The corrected text, clean.
+ */
+"corrected" | 
+/**
+ * The corrected text with the changes marked.
+ */
+"changes" | 
+/**
+ * The text as it was selected.
+ */
+"original"
 export type CustomSounds = { start: boolean; stop: boolean }
 export type FallbackOption = "cloud" | "cpu"
 export type GpuDeviceOption = { id: string; name: string; total_vram_mb: number }

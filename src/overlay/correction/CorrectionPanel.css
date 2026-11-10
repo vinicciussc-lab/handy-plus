@@ -1,11 +1,11 @@
 /* Correction panel: a card (progress, streamed text, preview) above a pill.
-   Lives in the 480x260 overlay window; the card scrolls inside instead of
+   Lives in the 640x420 overlay window; the card scrolls inside instead of
    overflowing. Colors and fonts come from RecordingOverlay.css. */
 .cor-wrap {
   --cor-ok: #34b87c;
   --cor-pill-h: 32px;
   --cor-gap: 8px;
-  width: min(456px, calc(100vw - 4px));
+  width: min(616px, calc(100vw - 4px));
   max-height: calc(100vh - 2px);
   display: flex;
   flex-direction: column;
@@ -125,10 +125,13 @@
   scrollbar-width: thin;
 }
 .cor-stream {
+  flex: 1 1 auto;
   margin-top: 6px;
   padding-top: 8px;
   border-top: 1px solid var(--s-hair);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .cor-caret {
@@ -150,13 +153,32 @@
 .cor-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 112px;
+  grid-template-rows: minmax(0, 1fr);
   gap: 10px;
-  min-height: 0;
+  flex: 1 1 auto;
   /* The text and the tone list scroll on their own; the hint stays visible. */
-  max-height: calc(100vh - var(--cor-pill-h) - var(--cor-gap) - 70px);
+  min-height: 0;
+}
+.cor-viewbar {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+.cor-view {
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--s-muted);
+}
+.cor-view.on {
+  background: var(--s-hair);
+  color: var(--color-text);
+  font-weight: 600;
 }
 .cor-text {
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

@@ -52,12 +52,18 @@ const WARMUP_USER: &str = "oi";
 const CANCEL_ID: &str = "correction_cancel";
 const APPLY_ID: &str = "correction_apply";
 const TONE_PREFIX: &str = "correction_tone_";
+const VIEW_ID: &str = "correction_view";
+const SCROLL_UP_ID: &str = "correction_scroll_up";
+const SCROLL_DOWN_ID: &str = "correction_scroll_down";
 /// Temporary shortcuts, registered only while a session needs them. They are
 /// not in `AppSettings.bindings`, so they never show on the shortcuts screen
 /// and startup/suspend/resume never touch them.
 pub const TEMPORARY_BINDING_IDS: &[&str] = &[
     CANCEL_ID,
     APPLY_ID,
+    VIEW_ID,
+    SCROLL_UP_ID,
+    SCROLL_DOWN_ID,
     "correction_tone_1",
     "correction_tone_2",
     "correction_tone_3",
@@ -105,6 +111,29 @@ pub enum FallbackOption {
     Cpu,
 }
 
+/// Which text the preview shows; Tab cycles through them.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Type, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrectionView {
+    /// The corrected text, clean.
+    #[default]
+    Corrected,
+    /// The corrected text with the changes marked.
+    Changes,
+    /// The text as it was selected.
+    Original,
+}
+
+impl CorrectionView {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Corrected => Self::Changes,
+            Self::Changes => Self::Original,
+            Self::Original => Self::Corrected,
+        }
+    }
+}
+
 /// Everything the correction panel shows. Sent whenever it changes.
 #[derive(Clone, Debug, Serialize, Deserialize, Type, tauri_specta::Event)]
 pub struct CorrectionUpdateEvent {
@@ -119,6 +148,11 @@ pub struct CorrectionUpdateEvent {
     pub elapsed_ms: Option<u64>,
     pub error: Option<CorrectionErrorCode>,
     pub fallback_options: Vec<FallbackOption>,
+    pub view: CorrectionView,
+    /// Counts the scroll key presses; the panel scrolls once per new value.
+    pub scroll_nonce: u32,
+    /// Direction of the last scroll: -1 up, 1 down, 0 none yet.
+    pub scroll_dir: i8,
 }
 
 impl CorrectionUpdateEvent {
@@ -135,6 +169,9 @@ impl CorrectionUpdateEvent {
             elapsed_ms: None,
             error: None,
             fallback_options: Vec::new(),
+            view: CorrectionView::Corrected,
+            scroll_nonce: 0,
+            scroll_dir: 0,
         }
     }
 }
@@ -144,6 +181,9 @@ pub enum SessionInput {
     Escape,
     Enter,
     Digit(u8),
+    Tab,
+    ScrollUp,
+    ScrollDown,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -152,6 +192,9 @@ pub enum SessionCommand {
     Apply,
     Regenerate(usize),
     UseFallback(FallbackOption),
+    NextView,
+    /// -1 up, 1 down.
+    Scroll(i8),
     Ignore,
 }
 
@@ -169,6 +212,9 @@ pub fn decide(
             SessionCommand::Cancel
         }
         (P::Preview, SessionInput::Enter) => SessionCommand::Apply,
+        (P::Preview, SessionInput::Tab) => SessionCommand::NextView,
+        (P::Generating | P::Preview, SessionInput::ScrollUp) => SessionCommand::Scroll(-1),
+        (P::Generating | P::Preview, SessionInput::ScrollDown) => SessionCommand::Scroll(1),
         (P::Preview, SessionInput::Digit(d)) if d >= 1 && usize::from(d) <= tones_len.min(9) => {
             SessionCommand::Regenerate(usize::from(d) - 1)
         }
@@ -203,13 +249,29 @@ pub fn check_text(text: &str) -> Result<(), CorrectionErrorCode> {
     Ok(())
 }
 
-/// Temporary bindings a phase listens to: Esc while working; Esc, Enter and
-/// one digit per choice while waiting for an answer; nothing otherwise.
+/// Temporary bindings a phase listens to: Esc (and the scroll keys while text
+/// streams); Esc, Enter, Tab, the scroll keys and one digit per tone in the
+/// preview; Esc, Enter and one digit per option in the fallback prompt;
+/// nothing otherwise.
 pub fn wanted_bindings(phase: &CorrectionPhase, choices: usize) -> Vec<String> {
     use CorrectionPhase as P;
     match phase {
-        P::Loading | P::Generating => vec![CANCEL_ID.to_string()],
-        P::Preview | P::NeedsFallback => [CANCEL_ID.to_string(), APPLY_ID.to_string()]
+        P::Loading => vec![CANCEL_ID.to_string()],
+        P::Generating => vec![
+            CANCEL_ID.to_string(),
+            SCROLL_UP_ID.to_string(),
+            SCROLL_DOWN_ID.to_string(),
+        ],
+        P::Preview => [CANCEL_ID.to_string(), APPLY_ID.to_string()]
+            .into_iter()
+            .chain((1..=choices.min(9)).map(|n| format!("{TONE_PREFIX}{n}")))
+            .chain([
+                VIEW_ID.to_string(),
+                SCROLL_UP_ID.to_string(),
+                SCROLL_DOWN_ID.to_string(),
+            ])
+            .collect(),
+        P::NeedsFallback => [CANCEL_ID.to_string(), APPLY_ID.to_string()]
             .into_iter()
             .chain((1..=choices.min(9)).map(|n| format!("{TONE_PREFIX}{n}")))
             .collect(),
@@ -227,6 +289,9 @@ pub fn binding_key(id: &str) -> Option<String> {
     match id {
         CANCEL_ID => Some("escape".to_string()),
         APPLY_ID => Some("enter".to_string()),
+        VIEW_ID => Some("tab".to_string()),
+        SCROLL_UP_ID => Some("up".to_string()),
+        SCROLL_DOWN_ID => Some("down".to_string()),
         _ => tone_digit(id).map(|d| d.to_string()),
     }
 }
@@ -235,6 +300,9 @@ pub fn input_for_binding(id: &str) -> Option<SessionInput> {
     match id {
         CANCEL_ID => Some(SessionInput::Escape),
         APPLY_ID => Some(SessionInput::Enter),
+        VIEW_ID => Some(SessionInput::Tab),
+        SCROLL_UP_ID => Some(SessionInput::ScrollUp),
+        SCROLL_DOWN_ID => Some(SessionInput::ScrollDown),
         _ => tone_digit(id).map(SessionInput::Digit),
     }
 }
@@ -272,13 +340,14 @@ fn session_tones(s: &CorrectionSettings) -> Vec<CorrectionTone> {
 }
 
 /// Runs `work` until it finishes, calling `on_tick` every [`TICK`] meanwhile.
-/// Esc drops `work` (aborting a stream or a load) and returns `None`; other
-/// keys are ignored.
+/// Esc drops `work` (aborting a stream or a load) and returns `None`; the
+/// scroll keys call `on_scroll`; other keys are ignored.
 async fn until_cancelled<F: Future>(
     work: F,
     inputs: &mut UnboundedReceiver<SessionInput>,
     phase: &CorrectionPhase,
     mut on_tick: impl FnMut(),
+    mut on_scroll: impl FnMut(i8),
 ) -> Option<F::Output> {
     let mut work = std::pin::pin!(work);
     let mut inputs_open = true;
@@ -296,8 +365,10 @@ async fn until_cancelled<F: Future>(
         match select(work.as_mut(), wake).await {
             Either::Left((out, _)) => return Some(out),
             Either::Right((Either::Left((Some(input), _)), _)) => {
-                if decide(phase, input, 0, &[]) == SessionCommand::Cancel {
-                    return None;
+                match decide(phase, input, 0, &[]) {
+                    SessionCommand::Cancel => return None,
+                    SessionCommand::Scroll(d) => on_scroll(d),
+                    _ => {}
                 }
             }
             Either::Right((Either::Left((None, _)), _)) => inputs_open = false,
@@ -362,7 +433,7 @@ impl ShortcutAction for CorrectSelectionAction {
     }
 }
 
-/// Esc, Enter and the digits while a session listens for them.
+/// Esc, Enter, Tab, the arrows and the digits while a session listens for them.
 struct CorrectionKeyAction;
 
 impl ShortcutAction for CorrectionKeyAction {
@@ -588,6 +659,15 @@ impl Session {
             let tones = self.panel.tones.len();
             match decide(&self.panel.phase, input, tones, fallback) {
                 SessionCommand::Ignore => continue,
+                SessionCommand::NextView => {
+                    self.panel.view = self.panel.view.next();
+                    emit(&self.app, &self.panel);
+                }
+                SessionCommand::Scroll(d) => {
+                    self.panel.scroll_nonce = self.panel.scroll_nonce.wrapping_add(1);
+                    self.panel.scroll_dir = d;
+                    emit(&self.app, &self.panel);
+                }
                 cmd => return cmd,
             }
         }
@@ -628,6 +708,7 @@ impl Session {
                 }
                 SessionCommand::Regenerate(i) => {
                     tone = i;
+                    self.panel.view = CorrectionView::Corrected;
                     self.started = Instant::now();
                 }
                 _ => return Ok(()),
@@ -708,7 +789,8 @@ impl Session {
         };
         let phase = CorrectionPhase::Loading;
         let loading = engine.ensure_loaded(model, gpu, expected_ms, |_| {});
-        let Some(loaded) = until_cancelled(loading, &mut self.inputs, &phase, &mut tick).await
+        let Some(loaded) =
+            until_cancelled(loading, &mut self.inputs, &phase, &mut tick, |_| {}).await
         else {
             return Ok(None);
         };
@@ -726,7 +808,7 @@ impl Session {
         if load_ms > 0 {
             // Cold load: the first request is slow, so pay for it here.
             let warmup = stream_chat(&target, WARMUP_SYSTEM, WARMUP_USER, |_| {});
-            match until_cancelled(warmup, &mut self.inputs, &phase, &mut tick).await {
+            match until_cancelled(warmup, &mut self.inputs, &phase, &mut tick, |_| {}).await {
                 None => return Ok(None),
                 Some(Err(e)) => warn!("Correction warm-up failed: {e}"),
                 Some(Ok(_)) => {}
@@ -750,23 +832,39 @@ impl Session {
         let original = self.panel.original.clone();
         let (system, user) = build_messages(rules, goal, &original);
         let input_chars = original.chars().count();
-        let mut panel = self.panel.clone();
+        // Shared with the scroll handler so a scroll event carries the text so far.
+        let shared = Arc::new(Mutex::new(self.panel.clone()));
         let app = self.app.clone();
         let mut raw = String::new();
         let mut last_emit: Option<Instant> = None;
-        let on_delta = move |delta: &str| {
-            raw.push_str(delta);
-            if last_emit.is_some_and(|t| t.elapsed() < EMIT_INTERVAL) {
-                return;
+        let on_delta = {
+            let (shared, app) = (shared.clone(), app.clone());
+            move |delta: &str| {
+                raw.push_str(delta);
+                if last_emit.is_some_and(|t| t.elapsed() < EMIT_INTERVAL) {
+                    return;
+                }
+                last_emit = Some(Instant::now());
+                let mut panel = lock(&shared);
+                panel.text = clean_output(&original, &raw);
+                panel.gen_progress = Some(generation_progress(raw.chars().count(), input_chars));
+                emit(&app, &panel);
             }
-            last_emit = Some(Instant::now());
-            panel.text = clean_output(&original, &raw);
-            panel.gen_progress = Some(generation_progress(raw.chars().count(), input_chars));
-            emit(&app, &panel);
+        };
+        let on_scroll = {
+            let (shared, app) = (shared.clone(), app.clone());
+            move |dir: i8| {
+                let mut panel = lock(&shared);
+                panel.scroll_nonce = panel.scroll_nonce.wrapping_add(1);
+                panel.scroll_dir = dir;
+                emit(&app, &panel);
+            }
         };
         let phase = CorrectionPhase::Generating;
         let streaming = stream_chat(target, &system, &user, on_delta);
-        let result = until_cancelled(streaming, &mut self.inputs, &phase, || {}).await;
+        let result = until_cancelled(streaming, &mut self.inputs, &phase, || {}, on_scroll).await;
+        // Keep the scroll count going into the preview.
+        self.panel.scroll_nonce = lock(&shared).scroll_nonce;
         if target.local {
             self.engine().touch();
         }
@@ -963,7 +1061,11 @@ mod tests {
         );
         assert_eq!(
             wanted_bindings(&CorrectionPhase::Generating, 4),
-            ["correction_cancel"]
+            [
+                "correction_cancel",
+                "correction_scroll_up",
+                "correction_scroll_down"
+            ]
         );
         assert_eq!(
             wanted_bindings(&CorrectionPhase::Preview, 2),
@@ -971,10 +1073,16 @@ mod tests {
                 "correction_cancel",
                 "correction_apply",
                 "correction_tone_1",
-                "correction_tone_2"
+                "correction_tone_2",
+                "correction_view",
+                "correction_scroll_up",
+                "correction_scroll_down"
             ]
         );
-        assert_eq!(wanted_bindings(&CorrectionPhase::Preview, 12).len(), 2 + 9);
+        assert_eq!(
+            wanted_bindings(&CorrectionPhase::Preview, 12).len(),
+            2 + 9 + 3
+        );
         assert_eq!(
             wanted_bindings(&CorrectionPhase::NeedsFallback, 1),
             ["correction_cancel", "correction_apply", "correction_tone_1"]
@@ -1012,6 +1120,104 @@ mod tests {
             Some(SessionInput::Digit(3))
         );
         assert_eq!(input_for_binding("cancel"), None);
+    }
+
+    #[test]
+    fn view_cycles_corrected_changes_original() {
+        assert_eq!(CorrectionView::Corrected.next(), CorrectionView::Changes);
+        assert_eq!(CorrectionView::Changes.next(), CorrectionView::Original);
+        assert_eq!(CorrectionView::Original.next(), CorrectionView::Corrected);
+        assert_eq!(CorrectionView::default(), CorrectionView::Corrected);
+    }
+
+    #[test]
+    fn tab_switches_view_only_in_preview() {
+        assert_eq!(
+            decide(&CorrectionPhase::Preview, SessionInput::Tab, 4, &[]),
+            SessionCommand::NextView
+        );
+        for p in [
+            CorrectionPhase::Loading,
+            CorrectionPhase::Generating,
+            CorrectionPhase::NeedsFallback,
+            CorrectionPhase::Applied,
+        ] {
+            assert_eq!(
+                decide(&p, SessionInput::Tab, 4, &[]),
+                SessionCommand::Ignore
+            );
+        }
+    }
+
+    #[test]
+    fn arrows_scroll_while_generating_or_previewing() {
+        for p in [CorrectionPhase::Generating, CorrectionPhase::Preview] {
+            assert_eq!(
+                decide(&p, SessionInput::ScrollDown, 4, &[]),
+                SessionCommand::Scroll(1)
+            );
+            assert_eq!(
+                decide(&p, SessionInput::ScrollUp, 4, &[]),
+                SessionCommand::Scroll(-1)
+            );
+        }
+        for p in [
+            CorrectionPhase::Loading,
+            CorrectionPhase::NeedsFallback,
+            CorrectionPhase::Error,
+        ] {
+            assert_eq!(
+                decide(&p, SessionInput::ScrollDown, 4, &[]),
+                SessionCommand::Ignore
+            );
+        }
+    }
+
+    #[test]
+    fn view_and_scroll_keys_are_listened_to_while_generating_and_previewing() {
+        let scroll = ["correction_scroll_up", "correction_scroll_down"];
+        let gen = wanted_bindings(&CorrectionPhase::Generating, 4);
+        assert!(scroll.iter().all(|k| gen.iter().any(|g| g == k)));
+        assert!(!gen.iter().any(|g| g == "correction_view"));
+        let prev = wanted_bindings(&CorrectionPhase::Preview, 4);
+        assert!(scroll.iter().all(|k| prev.iter().any(|g| g == k)));
+        assert!(prev.iter().any(|g| g == "correction_view"));
+        let fb = wanted_bindings(&CorrectionPhase::NeedsFallback, 2);
+        assert!(!fb
+            .iter()
+            .any(|g| g.starts_with("correction_s") || g == "correction_view"));
+    }
+
+    #[test]
+    fn tab_and_arrow_bindings_use_key_names_both_backends_parse() {
+        assert_eq!(binding_key("correction_view").as_deref(), Some("tab"));
+        assert_eq!(binding_key("correction_scroll_up").as_deref(), Some("up"));
+        assert_eq!(
+            binding_key("correction_scroll_down").as_deref(),
+            Some("down")
+        );
+        assert_eq!(
+            input_for_binding("correction_view"),
+            Some(SessionInput::Tab)
+        );
+        assert_eq!(
+            input_for_binding("correction_scroll_up"),
+            Some(SessionInput::ScrollUp)
+        );
+        assert_eq!(
+            input_for_binding("correction_scroll_down"),
+            Some(SessionInput::ScrollDown)
+        );
+        for id in [
+            "correction_view",
+            "correction_scroll_up",
+            "correction_scroll_down",
+        ] {
+            assert!(
+                TEMPORARY_BINDING_IDS.contains(&id),
+                "{id} must be registered as an action"
+            );
+        }
     }
 
     #[test]
@@ -1111,10 +1317,32 @@ mod tests {
             &mut rx,
             &CorrectionPhase::Generating,
             || {},
+            |_| {},
         ));
         assert!(out.is_none());
         assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
         assert!(rx.try_recv().is_err(), "every queued key was consumed");
+    }
+
+    #[test]
+    fn scroll_keys_reach_the_handler_without_stopping_the_work() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(SessionInput::ScrollDown).unwrap();
+        tx.send(SessionInput::ScrollUp).unwrap();
+        tx.send(SessionInput::Tab).unwrap();
+        let mut scrolls = Vec::new();
+        let out = tauri::async_runtime::block_on(until_cancelled(
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                5
+            },
+            &mut rx,
+            &CorrectionPhase::Generating,
+            || {},
+            |d| scrolls.push(d),
+        ));
+        assert_eq!(out, Some(5));
+        assert_eq!(scrolls, [1, -1]);
     }
 
     #[test]
@@ -1129,6 +1357,7 @@ mod tests {
             &mut rx,
             &CorrectionPhase::Loading,
             || ticks += 1,
+            |_| {},
         ));
         assert_eq!(out, Some(7));
         assert!(ticks >= 1, "ticked {ticks} times");

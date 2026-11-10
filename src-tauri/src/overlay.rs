@@ -323,7 +323,7 @@ static WINDOWS_OVERLAY_SIZE: std::sync::Mutex<(f64, f64)> =
 /// Windows accessibility text size (Settings > Accessibility > Text size), a
 /// separate axis from display scaling that WebView2 applies as a document zoom.
 #[cfg(target_os = "windows")]
-fn windows_text_scale_factor() -> f64 {
+pub(crate) fn windows_text_scale_factor() -> f64 {
     // Absent until the user moves the slider off 100%; stored as a percentage.
     winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
         .open_subkey(r"Software\Microsoft\Accessibility")

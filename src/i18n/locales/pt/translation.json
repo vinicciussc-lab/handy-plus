@@ -980,6 +980,19 @@
         "title": "Som",
         "label": "Som ao corrigir",
         "description": "Toca um som suave quando a correção começa e quando a prévia fica pronta."
+      },
+      "floatingButton": {
+        "title": "Botão flutuante",
+        "label": "Botão flutuante nas caixas de texto",
+        "description": "Mostra um botãozinho redondo no canto da caixa de texto em que você está digitando. Clique nele para corrigir o texto inteiro da caixa. Ele só aparece quando a caixa já tem texto e nunca em jogos, programas em tela cheia ou campos de senha.",
+        "excluded": {
+          "title": "Não mostrar o botão nestes programas",
+          "description": "Nome do arquivo do programa, por exemplo Discord.exe.",
+          "placeholder": "Discord.exe",
+          "add": "Adicionar",
+          "remove": "Remover {{name}}",
+          "empty": "Nenhum programa na lista."
+        }
       }
     }
   },
@@ -1075,6 +1088,7 @@
       "viewChanges": "Mudanças",
       "viewOriginal": "Original",
       "cancel": "cancelar",
+      "button": "Corrigir texto",
       "gpuFull": "Placa de vídeo cheia",
       "cloud": "Nuvem",
       "cpu": "Processador",

@@ -27,6 +27,12 @@ async setCorrectionSettingsCmd(settings: CorrectionSettings) : Promise<Result<nu
 async listLocalModels(dir: string) : Promise<LocalModel[]> {
     return await TAURI_INVOKE("list_local_models", { dir });
 },
+/**
+ * Hides the button and corrects the box it was sitting on.
+ */
+async correctionButtonClicked() : Promise<void> {
+    await TAURI_INVOKE("correction_button_clicked");
+},
 async resetBinding(id: string) : Promise<Result<BindingResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("reset_binding", { id }) };

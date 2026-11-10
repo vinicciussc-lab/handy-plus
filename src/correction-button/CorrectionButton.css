@@ -1,0 +1,41 @@
+@import "../styles/theme.css";
+
+/* The window is exactly the button's size (BUTTON_SIZE in button.rs); the
+   circle leaves 1px all round for its soft shadow. */
+.cb-stage {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cb-button {
+  box-sizing: border-box;
+  width: calc(100% - 2px);
+  height: calc(100% - 2px);
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid
+    color-mix(in srgb, var(--color-background-ui) 55%, var(--color-background));
+  background: var(--color-logo-primary);
+  color: color-mix(in srgb, var(--color-background-ui) 35%, #1b1719);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  cursor: pointer;
+  outline: none;
+  transition:
+    filter 120ms ease-out,
+    transform 120ms ease-out;
+}
+
+.cb-button:hover {
+  filter: brightness(1.08);
+}
+
+.cb-button:active {
+  transform: scale(0.94);
+}

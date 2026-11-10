@@ -193,6 +193,13 @@ const CorrectionPanel: React.FC<CorrectionPanelProps> = ({
             label={t("overlay.correction.generating")}
             value={undefined}
           />
+          <div className="cor-actions">
+            <PanelButton
+              label={t("overlay.correction.cancelButton")}
+              title={t("overlay.correction.cancelTip")}
+              action={{ kind: "cancel" }}
+            />
+          </div>
         </>
       );
       pill = toneModel;

@@ -72,6 +72,11 @@ pub struct CorrectionSettings {
     /// Soft sounds when a correction starts and when the preview is ready.
     #[serde(default = "default_true")]
     pub sounds: bool,
+    /// Round button at the bottom-right of the focused text box.
+    #[serde(default = "default_true")]
+    pub floating_button: bool,
+    /// Executable names (e.g. `Discord.exe`) where the floating button never shows.
+    pub button_excluded_apps: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -184,6 +189,8 @@ impl Default for CorrectionSettings {
             last_load_ms: HashMap::new(),
             defaults_version: CURRENT_DEFAULTS_VERSION,
             sounds: true,
+            floating_button: true,
+            button_excluded_apps: Vec::new(),
         }
     }
 }
@@ -499,5 +506,21 @@ mod tests {
         assert!(salvaged.sounds);
         let off = parse_or_salvage(&serde_json::json!({"sounds": false, "unload_timeout": "nope"}));
         assert!(!off.sounds);
+    }
+
+    #[test]
+    fn floating_button_survives_old_and_salvaged_stores() {
+        let s: CorrectionSettings = serde_json::from_str("{}").unwrap();
+        assert!(s.floating_button);
+        assert!(s.button_excluded_apps.is_empty());
+        let salvaged = parse_or_salvage(&serde_json::json!({"unload_timeout": "nope"}));
+        assert!(salvaged.floating_button);
+        let kept = parse_or_salvage(&serde_json::json!({
+            "floating_button": false,
+            "button_excluded_apps": ["Discord.exe"],
+            "unload_timeout": "nope",
+        }));
+        assert!(!kept.floating_button);
+        assert_eq!(kept.button_excluded_apps, ["Discord.exe"]);
     }
 }

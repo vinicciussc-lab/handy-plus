@@ -1249,7 +1249,15 @@ defaults_version?: number;
 /**
  * Soft sounds when a correction starts and when the preview is ready.
  */
-sounds?: boolean }
+sounds?: boolean; 
+/**
+ * Round button at the bottom-right of the focused text box.
+ */
+floating_button?: boolean; 
+/**
+ * Executable names (e.g. `Discord.exe`) where the floating button never shows.
+ */
+button_excluded_apps: string[] }
 export type CorrectionTone = { id: string; name: string; goal: string }
 /**
  * Everything the correction panel shows. Sent whenever it changes.

@@ -1100,3 +1100,121 @@ pub fn spawn_button_watcher(app: AppHandle, session_active: Arc<AtomicBool>); //
 - [ ] **Step 1: Testes que falham** (Rust): `begin_from_button` usa os mesmos bloqueios de `should_start` (teste puro de uma função `button_click_allowed(dictation_busy, session_active) -> bool`); conversão de posição física→lógica `to_logical((x, y), scale) -> (f64, f64)` com escala 1.25.
 - [ ] **Step 2–4:** falhar, implementar, passar (`cargo test`, `bun run lint`, `bun run check:translations`, `bun run build`; bindings.ts regenerado com uma execução de debug).
 - [ ] **Step 5: Commit.** `feat: floating button that corrects the focused text box`
+
+---
+
+## Terceira rodada (2026-11-10): sem botão flutuante, Traduzir, painel com mouse, fechar por engano, dica de atalho
+
+Spec: seção 15 do design.
+
+### Task 19: Remover o botão flutuante
+
+**Files:** remover `src-tauri/src/correction/button.rs`, `src-tauri/src/correction/text_focus.rs`, `src/correction-button/`; desfazer a entrada do vite, o `correction_button` em `capabilities/default.json`, a criação da janela/observador/saída em `lib.rs`, o comando `correction_button_clicked`, `begin_from_button`/`Origin::Button`/`CaptureMode::WholeField` em `session.rs`/`selection.rs` (o atalho continua: seleção primeiro, Ctrl+A se vazio), os campos `floating_button`/`button_excluded_apps` de `CorrectionSettings` (lojas antigas que ainda tenham esses campos devem continuar carregando: o serde ignora campos desconhecidos — confirmar com um teste), a seção da tela de configurações e as chaves de tradução usadas só por ela (em todas as línguas), e as features do crate `windows` que só o botão usava.
+
+- [ ] **Step 1: Teste**
+```rust
+#[test] fn store_with_removed_button_fields_still_loads() {
+    let v = serde_json::json!({"models_dir": "E:\\m", "floating_button": false, "button_excluded_apps": ["x.exe"]});
+    let s = parse_or_salvage(v);  // ou a função pública de leitura usada hoje
+    assert_eq!(s.models_dir, r"E:\m");
+}
+```
+- [ ] **Step 2–4:** remover, `cargo test`, `bun run lint`, `bun run check:translations`, `bun run build` (bindings.ts regenerado por uma execução de debug).
+- [ ] **Step 5: Commit.** `refactor: drop the floating button that most apps could not support`
+
+### Task 20: Tom "Traduzir"
+
+**Files:** `src-tauri/src/correction/settings.rs`, `src-tauri/src/correction/stream.rs` (teste real ignorado)
+
+- `CURRENT_DEFAULTS_VERSION = 3`; `default_tones()` ganha no fim `CorrectionTone { id: "traduzir", name: "Traduzir", goal: <abaixo> }`; `migrate_defaults`: se `defaults_version < 3`, acrescenta "Traduzir" quando não houver tom com id `traduzir` e houver menos de 9 tons.
+
+Objetivo:
+```
+Traduza o texto. Se ele estiver em português, traduza para o inglês; se já estiver em inglês, traduza para o português do Brasil. Use uma tradução natural, como uma pessoa nativa escreveria, mantendo o mesmo tom, o mesmo nível de formalidade e as mesmas ideias. Não explique a tradução.
+```
+- [ ] **Step 1: Testes** — `defaults_include_traduzir_last` (6 tons, último `traduzir`); `v2_store_gets_traduzir_once` (como o teste do Desenvolver); `full_tone_list_is_not_extended` continua valendo.
+- [ ] **Step 4b: Teste real (ignorado) com o Gemma:** os textos do spec seção 11 pelo tom Traduzir saem em inglês (sem palavras como "você", "não", "muito"; contém palavras inglesas comuns); um texto em inglês sai em português. Sem travessão (a regra global de travessão vale também em inglês).
+- [ ] **Step 5: Commit.** `feat: add a Traduzir tone for Portuguese and English`
+
+### Task 21: Painel mais largo, mouse e atalhos de fechar/copiar
+
+**Files:** `src-tauri/src/overlay.rs`, `src-tauri/src/correction/session.rs`, `src-tauri/src/lib.rs`, `src/overlay/correction/*`, locales
+
+**Interfaces:**
+```rust
+// overlay.rs: CORRECTION_WIDTH = 760.0, CORRECTION_HEIGHT = 460.0
+// SessionInput ganha: CopyKey (Ctrl+C), Shortcut (o atalho de correção apertado de novo), Ui(UiAction)
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum UiAction { Apply, Copy, Cancel, Tone(u8), View(CorrectionView) }
+#[tauri::command] #[specta::specta] pub fn correction_ui_action(app: AppHandle, action: UiAction);
+// SessionCommand ganha: Copy, SetView(CorrectionView)
+// binding temporária nova: correction_copy -> "ctrl+c" (só em Preview)
+```
+- `decide`: em Preview, `CopyKey`/`Ui(Copy)` → `Copy`; `Ui(Apply)` → `Apply`; `Ui(Cancel)` → `Cancel`; `Ui(Tone(n))` → `Regenerate(n-1)` se válido; `Ui(View(v))` → `SetView(v)`. Em Loading/Generating/Preview/NeedsFallback, `Shortcut` e `Ui(Cancel)` → `Cancel`. Em NeedsFallback, `Ui(Tone(n))` escolhe a opção n (igual ao dígito).
+- `Copy`: põe o texto corrigido na área de transferência (de propósito, como no caso Copied), fecha o painel e mostra a pílula "Correção copiada" por 2 s.
+- O atalho de correção apertado com uma sessão aberta deixa de ser ignorado e vira `SessionInput::Shortcut`.
+- Frontend: rodapé do painel com botões Aplicar (destaque), Copiar e Cancelar (só em Preview; Cancelar também em Loading/Generating); a lista de tons e as abas de visão são clicáveis; rolagem com a rodinha no cartão de texto (`overflow-y: auto`, a janela aceita o mouse com `accept_first_mouse`); `onMouseDown` com `preventDefault` em todos os controles para nunca pegar foco. Margem interna do cartão 20 px, entre blocos 12 px, texto 15 px.
+- [ ] **Step 1: Testes**
+```rust
+#[test] fn ui_actions_map_to_commands_in_preview() {
+    let p = CorrectionPhase::Preview;
+    assert_eq!(decide(&p, SessionInput::Ui(UiAction::Apply), 6, &[]), SessionCommand::Apply);
+    assert_eq!(decide(&p, SessionInput::Ui(UiAction::Copy), 6, &[]), SessionCommand::Copy);
+    assert_eq!(decide(&p, SessionInput::CopyKey, 6, &[]), SessionCommand::Copy);
+    assert_eq!(decide(&p, SessionInput::Ui(UiAction::Tone(3)), 6, &[]), SessionCommand::Regenerate(2));
+    assert_eq!(decide(&p, SessionInput::Ui(UiAction::Tone(9)), 6, &[]), SessionCommand::Ignore);
+    assert_eq!(decide(&p, SessionInput::Ui(UiAction::View(CorrectionView::Original)), 6, &[]), SessionCommand::SetView(CorrectionView::Original));
+}
+#[test] fn shortcut_again_or_cancel_button_closes_any_open_phase() {
+    for p in [CorrectionPhase::Loading, CorrectionPhase::Generating, CorrectionPhase::Preview, CorrectionPhase::NeedsFallback] {
+        assert_eq!(decide(&p, SessionInput::Shortcut, 6, &[FallbackOption::Cpu]), SessionCommand::Cancel);
+        assert_eq!(decide(&p, SessionInput::Ui(UiAction::Cancel), 6, &[FallbackOption::Cpu]), SessionCommand::Cancel);
+    }
+}
+#[test] fn copy_key_only_bound_in_preview() { /* binding set por fase: correction_copy só em Preview */ }
+```
+- [ ] **Step 2–4:** falhar, implementar, passar (`cargo test`, lint, check:translations, build).
+- [ ] **Step 5: Commit.** `feat: mouse controls, copy and close-again for the correction panel`
+
+### Task 22: Fechar ao clicar fora ou voltar a digitar
+
+**Files:** Create `src-tauri/src/correction/input_hooks.rs`; Modify `session.rs`, `lib.rs`
+
+**Interfaces:**
+```rust
+pub enum HookEvent { MouseDown { x: i32, y: i32 }, TypingKey }   // TypingKey: tecla de texto não injetada
+pub fn start_hooks(on_event: impl Fn(HookEvent) + Send + Sync + 'static); // thread própria com loop de mensagens,
+                                                                         // WH_MOUSE_LL + WH_KEYBOARD_LL; Windows only
+pub fn is_typing_key(vk: u32, injected: bool, ctrl_or_alt_down: bool) -> bool; // letras, números, espaço, pontuação, Backspace;
+                                                                              // falso para injetadas, modificadores, F-keys,
+                                                                              // setas, Tab, Enter, Esc, e com Ctrl/Alt
+pub fn click_outside(x: i32, y: i32, panel: (i32, i32, i32, i32)) -> bool;
+```
+- Ganchos sempre instalados (servem também à Task 23), mas a sessão só reage enquanto aberta: em Loading/Generating/Preview/NeedsFallback, `MouseDown` fora do retângulo físico atual da janela `recording_overlay` → `Cancel`; `TypingKey` → `Cancel` (a tecla segue para o programa). As teclas que o painel usa (dígitos, Tab, setas, Enter, Esc, Ctrl+C) continuam com as bindings temporárias e não contam como digitação enquanto registradas. Eventos injetados pelo próprio app (Ctrl+C/Ctrl+A/Ctrl+V do enigo) são ignorados (`LLKHF_INJECTED`/`LLMHF_INJECTED`).
+- O callback do gancho nunca bloqueia: só envia para um canal e retorna `CallNextHookEx` imediatamente.
+- [ ] **Step 1: Testes** para `is_typing_key` (tabela: 'A', '1', espaço, Backspace → true; injetada, Ctrl+A, Shift sozinho, F5, seta, Enter, Esc, Tab → false) e `click_outside` (dentro, borda, fora).
+- [ ] **Step 2–4:** falhar, implementar, passar.
+- [ ] **Step 5: Commit.** `feat: close the correction panel on outside clicks or typing`
+
+### Task 23: Dica de atalho ao digitar
+
+**Files:** Create `src-tauri/src/correction/typing_hint.rs`; Modify `settings.rs` (`typing_hint: bool`, padrão true), `overlay.rs` (estado `"hint"`, ~340 × 44), `session.rs`/`lib.rs`, `src/overlay/` (pílula da dica, clicável), tela de configurações (chave "Mostrar dica do atalho ao digitar"), locales
+
+**Interfaces:**
+```rust
+pub const HINT_MIN_KEYS: u32 = 12;
+pub const HINT_IDLE_MS: u64 = 1500;
+pub const HINT_SHOW_MS: u64 = 4000;
+pub struct HintTracker { /* contagem por hwnd em primeiro plano, janelas que já viram a dica, último toque */ }
+impl HintTracker {
+    pub fn on_typing_key(&mut self, hwnd: isize, now_ms: u64);
+    /// Chamado a cada ~250 ms; devolve Some(hwnd) quando a dica deve aparecer agora.
+    pub fn poll(&mut self, now_ms: u64, blocked: bool) -> Option<isize>;
+}
+```
+- Regras: conta só `TypingKey` (Task 22) na janela em primeiro plano; trocar de janela zera a contagem; quando `contagem >= HINT_MIN_KEYS` e passaram `HINT_IDLE_MS` sem teclas e `blocked == false` e a janela ainda não viu a dica → mostra e marca a janela. `blocked` = dica desligada, tela cheia, ditado em andamento, correção aberta ou janela do próprio Handy Plus.
+- A dica: pílula no lugar da pílula do Handy (estado `"hint"`), texto `"<atalho> para melhorar o texto"` com o atalho atual formatado (ex.: "Ctrl + \"), some após `HINT_SHOW_MS` ou na próxima `TypingKey`; clique → mesmo caminho do atalho (`session::begin`), com o foco ainda no programa do usuário (a janela da pílula não pega foco). Não toca som.
+- [ ] **Step 1: Testes** do `HintTracker`: não mostra antes de 12 teclas; não mostra antes de 1,5 s parado; mostra uma vez por janela; trocar de janela zera; `blocked` impede e não marca a janela.
+- [ ] **Step 2–4:** falhar, implementar, passar (`cargo test`, lint, check:translations, build).
+- [ ] **Step 5: Commit.** `feat: show a typing hint with the correction shortcut`

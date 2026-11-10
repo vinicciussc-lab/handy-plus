@@ -208,3 +208,14 @@ Aprovado pelo usuário com esta descrição:
 - Nunca aparece em jogos nem em programas em tela cheia (o mesmo detector da placa de vídeo), nem em campos de senha, nem nas janelas do próprio Handy Plus.
 - Nas configurações da correção: chave para ligar e desligar (ligado por padrão) e uma lista de programas (nome do executável, por exemplo `Discord.exe`) onde ele nunca aparece.
 - Limite conhecido: depende da acessibilidade do Windows (UI Automation); em alguns apps pode não aparecer ou aparecer fora do lugar. O atalho continua funcionando em qualquer lugar.
+
+## 15. Terceira rodada (2026-11-10): sem botão flutuante, dica de atalho, tradução e painel mais fácil
+
+Aprovado pelo usuário depois de testar o botão flutuante.
+
+- **Botão flutuante descartado.** No teste ele só apareceu na pesquisa do Google; WhatsApp, Discord e YouTube não informam a caixa de texto pela acessibilidade do Windows. O código do botão e da detecção da caixa é removido.
+- **Dica de atalho no lugar do botão.** Não depende de saber onde está a caixa: quando o usuário digita algumas palavras em qualquer programa (pelo menos ~12 teclas de texto) e para por ~1,5 s, aparece por ~4 s uma pílula discreta embaixo no centro (onde fica a pílula do Handy) com "<atalho> para melhorar o texto". Some ao voltar a digitar. Clicar nela faz a correção (mesmo caminho do atalho). No máximo uma vez por janela. Nunca em tela cheia ou jogo, durante um ditado ou com uma correção aberta, nem nas janelas do Handy Plus. Chave para desligar (ligada por padrão). O app conta teclas, nunca guarda o que foi digitado.
+- **Tom "Traduzir"** (sexto tom): português → inglês natural mantendo o tom; se o texto já estiver em inglês, inglês → português. Outros idiomas: o usuário cria tons próprios.
+- **Erros previstos no painel:** clicar fora do painel fecha (igual ao Esc); voltar a digitar fecha e a digitação segue normal; apertar o atalho de novo fecha; Ctrl + C copia a correção e fecha (sem colar); Enter continua aplicando e Ctrl + Z desfaz.
+- **Mouse no painel:** botões Aplicar, Copiar e Cancelar; clicar num tom refaz nesse tom; clicar em Corrigido / Mudanças / Original troca a visão; rodinha rola o texto. Editar o texto à mão dentro do painel fica para depois (exigiria o painel tomar o foco do teclado).
+- **Painel mais largo e com respiro:** ~760 × 460, com mais margem interna.

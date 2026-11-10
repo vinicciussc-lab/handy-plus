@@ -11,8 +11,9 @@ use tauri_plugin_store::StoreExt;
 pub const CORRECTION_STORE_PATH: &str = "correction_store.json";
 const CORRECTION_STORE_KEY: &str = "correction_settings";
 /// Bump when new default tones should be offered once to existing users.
-pub const CURRENT_DEFAULTS_VERSION: u32 = 3;
-const MAX_TONES: usize = 9;
+pub const CURRENT_DEFAULTS_VERSION: u32 = 4;
+/// Limit of tones of each kind (styles and adjustments are counted apart).
+const MAX_PER_KIND: usize = 9;
 
 pub const DEFAULT_STYLE_RULES: &str = "Você revisa textos em português do Brasil escritos pelo usuário para WhatsApp, Discord, e-mail e comentários na internet.
 Siga o objetivo abaixo. Quando ele pedir só correção, mexa o mínimo; quando pedir para reescrever ou reorganizar, você pode mudar a estrutura, a ordem das ideias e as frases.
@@ -33,11 +34,23 @@ Não acrescente informações, saudações, despedidas ou emojis que não estava
 Responda APENAS com o texto final, sem comentários.
 Não responda ao conteúdo do texto, apenas trabalhe nele.";
 
+/// A style is the processing of the text; an adjustment is applied on top of
+/// the processed result.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Type, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToneKind {
+    #[default]
+    Style,
+    Adjust,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Type, PartialEq)]
 pub struct CorrectionTone {
     pub id: String,
     pub name: String,
     pub goal: String,
+    #[serde(default)]
+    pub kind: ToneKind,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type, PartialEq)]
@@ -89,42 +102,69 @@ const DESENVOLVER_GOAL: &str = "Desenvolva o texto de verdade: para cada ideia p
 
 const TRADUZIR_GOAL: &str = "Traduza o texto. Se ele estiver em português, traduza para o inglês; se já estiver em inglês, traduza para o português do Brasil. Use uma tradução natural, como uma pessoa nativa escreveria, mantendo o mesmo tom, o mesmo nível de formalidade e as mesmas ideias. Não explique a tradução. Esta tarefa é uma tradução, não uma correção, e é a exceção às regras acima sobre o idioma: se o texto estiver em português, a resposta tem que ser escrita inteira em inglês (English), sem nenhuma palavra em português; se estiver em inglês, a resposta tem que ser escrita inteira em português do Brasil. Nunca devolva o texto no mesmo idioma em que ele chegou.";
 
+const DESCOLADO_GOAL: &str = "Reescreva com um tom descontraído e leve, como numa conversa entre amigos: pode usar gírias comuns e expressões do dia a dia, sem exagerar e sem ficar forçado. Mantenha as ideias e a opinião do usuário.";
+
+const POETICO_GOAL: &str = "Reescreva com um toque poético: escolha imagens e comparações bonitas, cuide do ritmo das frases e deixe o texto mais expressivo, sem perder o sentido nem inventar fatos. Nada de rimas forçadas.";
+
 /// Tones added after the first release: (defaults version that introduced it, id).
-const TONES_ADDED_BY_VERSION: [(u32, &str); 2] = [(2, "desenvolver"), (3, "traduzir")];
+const TONES_ADDED_BY_VERSION: [(u32, &str); 4] = [
+    (2, "desenvolver"),
+    (3, "traduzir"),
+    (4, "descolado"),
+    (4, "poetico"),
+];
+
+/// Ids whose tone is an adjustment (version 4 split tones into two kinds).
+const ADJUST_IDS: [&str; 4] = [
+    "mais_curto",
+    "desenvolver",
+    "traduzir",
+    "melhorar_argumentos",
+];
+
+/// Names the first releases gave to tones that were renamed in version 4: (id, old name, new name).
+const RENAMED_IN_V4: [(&str, &str, &str); 2] = [
+    ("mais_formal", "Mais formal", "Formal"),
+    ("mais_curto", "Mais curto", "Encurtar"),
+];
 
 pub fn default_tones() -> Vec<CorrectionTone> {
-    let tone = |id: &str, name: &str, goal: &str| CorrectionTone {
+    let tone = |id: &str, name: &str, goal: &str, kind: ToneKind| CorrectionTone {
         id: id.to_string(),
         name: name.to_string(),
         goal: goal.to_string(),
+        kind,
     };
+    use ToneKind::{Adjust, Style};
     vec![
         tone(
             "meu_estilo",
             "Meu estilo",
             "Corrija ortografia, acentuação, concordância, pontuação e vírgulas, e deixe as frases coerentes e fáceis de ler. Mantenha as mesmas palavras sempre que estiverem certas, as expressões do usuário e o mesmo nível de formalidade. Não deixe o texto mais longo do que precisa.",
+            Style,
         ),
         tone(
             "mais_formal",
-            "Mais formal",
+            "Formal",
             "Reescreva com tom formal e educado, como num e-mail de trabalho: troque gírias e abreviações por palavras comuns e corretas, use frases completas e organize em parágrafos se precisar. Sem ficar engessado nem usar palavras difíceis.",
+            Style,
         ),
+        tone("descolado", "Descolado", DESCOLADO_GOAL, Style),
+        tone("poetico", "Poético", POETICO_GOAL, Style),
         tone(
             "mais_curto",
-            "Mais curto",
+            "Encurtar",
             "Reescreva bem mais curto: corte pelo menos metade do texto, junte as frases em poucas frases, tire repetições, rodeios e detalhes que não mudam o sentido, mantendo os fatos e a opinião do usuário.",
+            Adjust,
         ),
+        tone("desenvolver", "Desenvolver", DESENVOLVER_GOAL, Adjust),
+        tone("traduzir", "Traduzir", TRADUZIR_GOAL, Adjust),
         tone(
             "melhorar_argumentos",
             "Melhorar argumentos",
             "Reorganize o texto para convencer melhor: comece pela ideia principal, coloque os argumentos numa ordem lógica, junte ou separe frases quando ajudar, ligue as ideias com conectivos simples e termine com uma conclusão clara. Pode mudar bastante a estrutura, mas não invente fatos nem mude a opinião do usuário.",
+            Adjust,
         ),
-        tone(
-            "desenvolver",
-            "Desenvolver",
-            DESENVOLVER_GOAL,
-        ),
-        tone("traduzir", "Traduzir", TRADUZIR_GOAL),
     ]
 }
 
@@ -143,6 +183,7 @@ fn old_tones_v1() -> Vec<CorrectionTone> {
             id: id.to_string(),
             name: name.to_string(),
             goal: goal.to_string(),
+            kind: ToneKind::Style,
         })
         .collect()
 }
@@ -170,12 +211,37 @@ pub fn migrate_defaults(s: &mut CorrectionSettings) -> bool {
     }
     if s.defaults_version < CURRENT_DEFAULTS_VERSION {
         let from = s.defaults_version;
-        for (version, id) in TONES_ADDED_BY_VERSION {
-            if from < version && !s.tones.iter().any(|t| t.id == id) && s.tones.len() < MAX_TONES {
-                if let Some(tone) = new_tones.iter().find(|t| t.id == id) {
-                    s.tones.push(tone.clone());
+        if from < 4 {
+            for tone in &mut s.tones {
+                if ADJUST_IDS.contains(&tone.id.as_str()) {
+                    tone.kind = ToneKind::Adjust;
+                }
+                if let Some((_, _, new_name)) = RENAMED_IN_V4
+                    .iter()
+                    .find(|(id, old, _)| tone.id == *id && tone.name == *old)
+                {
+                    tone.name = new_name.to_string();
                 }
             }
+        }
+        for (version, id) in TONES_ADDED_BY_VERSION {
+            if from >= version || s.tones.iter().any(|t| t.id == id) {
+                continue;
+            }
+            let Some(tone) = new_tones.iter().find(|t| t.id == id) else {
+                continue;
+            };
+            let of_kind = s.tones.iter().filter(|t| t.kind == tone.kind).count();
+            if of_kind >= MAX_PER_KIND {
+                continue;
+            }
+            // New tones go after the last tone of their kind (adjustments at the end).
+            let at = s
+                .tones
+                .iter()
+                .rposition(|t| t.kind == tone.kind)
+                .map_or(s.tones.len(), |i| i + 1);
+            s.tones.insert(at, tone.clone());
         }
         s.defaults_version = CURRENT_DEFAULTS_VERSION;
         changed = true;
@@ -287,103 +353,247 @@ pub fn set_correction_settings_cmd(
 mod tests {
     use super::*;
 
+    fn sorted_by_id(mut tones: Vec<CorrectionTone>) -> Vec<CorrectionTone> {
+        tones.sort_by(|a, b| a.id.cmp(&b.id));
+        tones
+    }
+
+    fn names(tones: &[CorrectionTone]) -> Vec<&str> {
+        tones.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    fn tone(id: &str, name: &str, kind: ToneKind) -> CorrectionTone {
+        CorrectionTone {
+            id: id.into(),
+            name: name.into(),
+            goal: "g".into(),
+            kind,
+        }
+    }
+
     #[test]
-    fn default_tones_are_the_six_from_the_spec() {
-        let names: Vec<_> = default_tones().into_iter().map(|t| t.name).collect();
+    fn default_tones_are_four_styles_then_four_adjustments() {
+        let t = default_tones();
         assert_eq!(
-            names,
+            names(&t),
             [
                 "Meu estilo",
-                "Mais formal",
-                "Mais curto",
-                "Melhorar argumentos",
+                "Formal",
+                "Descolado",
+                "Poético",
+                "Encurtar",
                 "Desenvolver",
-                "Traduzir"
+                "Traduzir",
+                "Melhorar argumentos"
+            ]
+        );
+        let ids: Vec<_> = t.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "meu_estilo",
+                "mais_formal",
+                "descolado",
+                "poetico",
+                "mais_curto",
+                "desenvolver",
+                "traduzir",
+                "melhorar_argumentos"
+            ]
+        );
+        assert!(t[..4].iter().all(|t| t.kind == ToneKind::Style));
+        assert!(t[4..].iter().all(|t| t.kind == ToneKind::Adjust));
+    }
+
+    #[test]
+    fn new_style_goals_are_the_approved_texts() {
+        let t = default_tones();
+        assert!(t[2]
+            .goal
+            .starts_with("Reescreva com um tom descontraído e leve"));
+        assert!(t[3].goal.starts_with("Reescreva com um toque poético"));
+        assert!(t[3].goal.ends_with("Nada de rimas forçadas."));
+        assert!(t[6].goal.starts_with("Traduza o texto."));
+    }
+
+    #[test]
+    fn v3_store_gets_kinds_new_names_and_two_new_styles_once() {
+        let mut old = default_tones();
+        old.retain(|t| t.id != "descolado" && t.id != "poetico");
+        for t in &mut old {
+            t.kind = ToneKind::Style;
+            if t.id == "mais_formal" {
+                t.name = "Mais formal".into();
+            }
+            if t.id == "mais_curto" {
+                t.name = "Mais curto".into();
+            }
+        }
+        let mut s = CorrectionSettings {
+            tones: old,
+            defaults_version: 3,
+            ..Default::default()
+        };
+        assert!(migrate_defaults(&mut s));
+        assert_eq!(s.defaults_version, 4);
+        let kind = |id: &str| s.tones.iter().find(|t| t.id == id).unwrap().kind;
+        for id in [
+            "mais_curto",
+            "desenvolver",
+            "traduzir",
+            "melhorar_argumentos",
+        ] {
+            assert_eq!(kind(id), ToneKind::Adjust, "{id}");
+        }
+        for id in ["meu_estilo", "mais_formal", "descolado", "poetico"] {
+            assert_eq!(kind(id), ToneKind::Style, "{id}");
+        }
+        assert_eq!(
+            names(&s.tones),
+            [
+                "Meu estilo",
+                "Formal",
+                "Descolado",
+                "Poético",
+                "Encurtar",
+                "Desenvolver",
+                "Traduzir",
+                "Melhorar argumentos"
+            ]
+        );
+        // Idempotent, and a deleted new style does not come back.
+        assert!(!migrate_defaults(&mut s));
+        s.tones.retain(|t| t.id != "descolado");
+        assert!(!migrate_defaults(&mut s));
+        assert_eq!(s.tones.len(), 7);
+    }
+
+    #[test]
+    fn migration_renames_only_untouched_default_names() {
+        let mut s = CorrectionSettings {
+            tones: vec![
+                tone("mais_formal", "Super formal", ToneKind::Style),
+                tone("mais_curto", "Mais curto", ToneKind::Style),
+            ],
+            defaults_version: 3,
+            ..Default::default()
+        };
+        assert!(migrate_defaults(&mut s));
+        let name = |id: &str| s.tones.iter().find(|t| t.id == id).unwrap().name.clone();
+        assert_eq!(name("mais_formal"), "Super formal");
+        assert_eq!(name("mais_curto"), "Encurtar");
+    }
+
+    #[test]
+    fn new_styles_go_right_after_the_existing_styles() {
+        let mut s = CorrectionSettings {
+            tones: vec![
+                tone("meu_estilo", "Meu estilo", ToneKind::Style),
+                tone("meu_custom", "Custom", ToneKind::Style),
+                tone("mais_curto", "Mais curto", ToneKind::Style),
+            ],
+            defaults_version: 3,
+            ..Default::default()
+        };
+        migrate_defaults(&mut s);
+        let ids: Vec<_> = s.tones.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "meu_estilo",
+                "meu_custom",
+                "descolado",
+                "poetico",
+                "mais_curto"
             ]
         );
     }
 
     #[test]
-    fn defaults_include_desenvolver_fifth() {
-        let t = default_tones();
-        assert_eq!(
-            (t[4].id.as_str(), t[4].name.as_str()),
-            ("desenvolver", "Desenvolver")
-        );
-    }
-
-    #[test]
-    fn defaults_include_traduzir_last() {
-        let t = default_tones();
-        assert_eq!(t.len(), 6);
-        assert_eq!(
-            (t[5].id.as_str(), t[5].name.as_str()),
-            ("traduzir", "Traduzir")
-        );
-        assert!(t[5].goal.starts_with("Traduza o texto."));
-    }
-
-    #[test]
     fn v2_store_gets_traduzir_once() {
         let mut s = CorrectionSettings {
-            tones: default_tones()[..5].to_vec(),
+            tones: default_tones()
+                .into_iter()
+                .filter(|t| t.id != "traduzir" && t.id != "descolado" && t.id != "poetico")
+                .collect(),
             defaults_version: 2,
             ..Default::default()
         };
         assert!(migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 6);
-        assert_eq!(s.tones[5].id, "traduzir");
-        assert_eq!(s.defaults_version, 3);
-        s.tones.pop();
+        assert_eq!(s.tones.len(), 8);
+        assert!(s.tones.iter().any(|t| t.id == "traduzir"));
+        assert_eq!(s.defaults_version, 4);
+        s.tones.retain(|t| t.id != "traduzir");
         assert!(!migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 5);
+        assert_eq!(s.tones.len(), 7);
     }
 
     #[test]
-    fn old_store_gets_desenvolver_once() {
+    fn old_store_gets_the_new_tones_once() {
         let mut s = CorrectionSettings {
-            tones: default_tones()[..4].to_vec(),
+            tones: old_tones_v1(),
             defaults_version: 0,
             ..Default::default()
         };
         assert!(migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 6);
-        assert_eq!(s.defaults_version, 3);
+        assert_eq!(s.tones.len(), 8);
+        assert_eq!(s.defaults_version, 4);
         s.tones.pop();
         s.tones.pop();
         assert!(!migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 4);
+        assert_eq!(s.tones.len(), 6);
     }
 
     #[test]
-    fn full_tone_list_is_not_extended() {
-        let mut tones = default_tones()[..4].to_vec();
-        while tones.len() < 9 {
-            tones.push(CorrectionTone {
-                id: format!("t{}", tones.len()),
-                name: "x".into(),
-                goal: "y".into(),
-            });
-        }
+    fn limit_is_nine_per_kind() {
+        // Nine styles: no room for the two new styles.
+        let mut tones: Vec<_> = (0..9)
+            .map(|i| tone(&format!("s{i}"), "x", ToneKind::Style))
+            .collect();
+        tones.push(tone("mais_curto", "Mais curto", ToneKind::Style));
         let mut s = CorrectionSettings {
             tones,
-            defaults_version: 0,
+            defaults_version: 3,
             ..Default::default()
         };
         migrate_defaults(&mut s);
-        assert_eq!(s.tones.len(), 9);
-        assert_eq!(s.defaults_version, 3);
+        let styles = s.tones.iter().filter(|t| t.kind == ToneKind::Style).count();
+        assert_eq!(styles, 9);
+        assert!(!s.tones.iter().any(|t| t.id == "descolado"));
+        assert_eq!(s.defaults_version, 4);
+
+        // Nine adjustments do not block the new styles.
+        let mut tones: Vec<_> = (0..9)
+            .map(|i| tone(&format!("a{i}"), "x", ToneKind::Adjust))
+            .collect();
+        tones.push(tone("meu_estilo", "Meu estilo", ToneKind::Style));
+        let mut s = CorrectionSettings {
+            tones,
+            defaults_version: 3,
+            ..Default::default()
+        };
+        migrate_defaults(&mut s);
+        assert!(s.tones.iter().any(|t| t.id == "descolado"));
+        assert!(s.tones.iter().any(|t| t.id == "poetico"));
+        assert_eq!(s.tones.len(), 12);
     }
 
     #[test]
-    fn existing_desenvolver_is_not_duplicated() {
-        let mut s = CorrectionSettings {
-            defaults_version: 0,
-            ..Default::default()
-        };
-        assert!(migrate_defaults(&mut s));
-        assert_eq!(s.tones.len(), 6);
-        assert_eq!(s.defaults_version, 3);
+    fn old_store_without_kind_loads_as_style() {
+        let s: CorrectionSettings = serde_json::from_value(serde_json::json!({
+            "tones": [{"id": "x", "name": "Meu", "goal": "g"}]
+        }))
+        .unwrap();
+        assert_eq!(s.tones[0].kind, ToneKind::Style);
+        let salvaged = parse_or_salvage(&serde_json::json!({
+            "unload_timeout": "nope",
+            "tones": [{"id": "x", "name": "Meu", "goal": "g"}]
+        }));
+        assert_eq!(salvaged.tones[0].kind, ToneKind::Style);
+        assert_eq!(
+            serde_json::to_value(ToneKind::Adjust).unwrap(),
+            serde_json::json!("adjust")
+        );
     }
 
     #[test]
@@ -417,7 +627,7 @@ mod tests {
     fn settings_missing_fields_fall_back_to_defaults() {
         let s: CorrectionSettings = serde_json::from_str(r#"{"models_dir":"E:\\m"}"#).unwrap();
         assert_eq!(s.models_dir, r"E:\m");
-        assert_eq!(s.tones.len(), 6);
+        assert_eq!(s.tones.len(), 8);
     }
 
     #[test]
@@ -444,7 +654,7 @@ mod tests {
         };
         assert!(migrate_defaults(&mut s));
         assert_eq!(s.style_rules, DEFAULT_STYLE_RULES);
-        assert_eq!(s.tones, default_tones());
+        assert_eq!(sorted_by_id(s.tones), sorted_by_id(default_tones()));
     }
 
     #[test]
@@ -460,7 +670,8 @@ mod tests {
         assert!(migrate_defaults(&mut s));
         assert_eq!(s.style_rules, "minhas regras");
         assert_eq!(s.tones[1].goal, "meu objetivo");
-        assert_eq!(s.tones[3].goal, default_tones()[3].goal);
+        let melhorar = s.tones.iter().find(|t| t.id == "melhorar_argumentos");
+        assert_eq!(melhorar.unwrap().goal, default_tones().last().unwrap().goal);
     }
 
     #[test]
@@ -499,7 +710,7 @@ mod tests {
         };
         assert!(migrate_defaults(&mut s));
         assert_eq!(s.style_rules, "minhas regras");
-        assert_eq!(s.tones, default_tones());
+        assert_eq!(sorted_by_id(s.tones), sorted_by_id(default_tones()));
     }
 
     #[test]
@@ -508,6 +719,7 @@ mod tests {
             id: "meu_estilo".into(),
             name: "Meu estilo".into(),
             goal: "meu objetivo".into(),
+            kind: ToneKind::Style,
         }];
         let mut s = CorrectionSettings {
             style_rules: OLD_STYLE_RULES_V1.into(),
@@ -516,19 +728,19 @@ mod tests {
         };
         assert!(migrate_defaults(&mut s));
         assert_eq!(s.style_rules, DEFAULT_STYLE_RULES);
-        assert_eq!(s.tones, edited);
+        assert_eq!(s.tones[0], edited[0]);
     }
 
     #[test]
     fn new_defaults_keep_the_dash_rule_and_restructure_tone() {
         assert!(DEFAULT_STYLE_RULES.contains("NUNCA use travessão"));
-        assert!(default_tones()[3].goal.contains("Reorganize"));
+        assert!(default_tones()[7].goal.contains("Reorganize"));
     }
 
     #[test]
     fn non_object_value_falls_back_to_defaults() {
         let s = parse_or_salvage(&serde_json::json!(42));
-        assert_eq!(s.tones.len(), 6);
+        assert_eq!(s.tones.len(), 8);
     }
 
     #[test]

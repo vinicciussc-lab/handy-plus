@@ -145,6 +145,7 @@ export const CorrectionTonesEditor: React.FC<CorrectionTonesEditorProps> = ({
         id: `tom_${Date.now().toString(36)}`,
         name: t("settings.correction.tones.newName"),
         goal: t("settings.correction.tones.newGoal"),
+        kind: "style",
       },
     ]);
   };

@@ -1709,6 +1709,7 @@ mod tests {
             id: "a".into(),
             name: "A".into(),
             goal: "g".into(),
+            kind: Default::default(),
         }];
         assert_eq!(session_tones(&s).len(), 1);
     }

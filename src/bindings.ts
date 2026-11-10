@@ -1267,7 +1267,7 @@ sounds?: boolean;
  * After some typing and a pause, a pill shows the correction shortcut.
  */
 typing_hint?: boolean }
-export type CorrectionTone = { id: string; name: string; goal: string }
+export type CorrectionTone = { id: string; name: string; goal: string; kind?: ToneKind }
 /**
  * Everything the correction panel shows. Sent whenever it changes.
  */
@@ -1596,6 +1596,11 @@ export type StreamWorkKind = "transcribing" | "polishing"
  * and `Dark` force one of the two palettes Handy already ships.
  */
 export type Theme = "system" | "light" | "dark"
+/**
+ * A style is the processing of the text; an adjustment is applied on top of
+ * the processed result.
+ */
+export type ToneKind = "style" | "adjust"
 export type TranscribeAcceleratorSetting = "auto" | "cpu" | "gpu"
 /**
  * Emitted when a dictation finishes (not on cancel); onboarding uses it to measure speed.

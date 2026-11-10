@@ -533,6 +533,7 @@ mod tests {
 "
         );
         let mut meu_estilo_len: Option<usize> = None;
+        let mut tone_failures: Vec<String> = Vec::new();
         for tone in default_tones() {
             let (system, user) = build_messages(DEFAULT_STYLE_RULES, &tone.goal, TONES_SAMPLE);
             let raw = match stream_chat(&target, &system, &user, |_| {}).await {
@@ -550,7 +551,9 @@ mod tests {
 ",
                 tone.name
             ));
-            assert!(!out.contains('—') && !out.contains('–'));
+            if out.contains('—') || out.contains('–') {
+                tone_failures.push(format!("{} has a dash: {out}", tone.name));
+            }
             if tone.id == "meu_estilo" {
                 meu_estilo_len = Some(out.chars().count());
             }
@@ -563,19 +566,39 @@ mod tests {
                     TONES_SAMPLE.chars().count(),
                     out.chars().count()
                 ));
-                assert!(
-                    out.chars().count() >= base * 150 / 100,
-                    "Desenvolver did not expand enough: {} vs Meu estilo {base}",
-                    out.chars().count()
-                );
+                if out.chars().count() < base * 150 / 100 {
+                    tone_failures.push(format!(
+                        "Desenvolver did not expand enough: {} vs Meu estilo {base}",
+                        out.chars().count()
+                    ));
+                }
+            }
+            if tone.id == "descolado" || tone.id == "poetico" {
+                if out.trim().is_empty() {
+                    tone_failures.push(format!("{} came back empty", tone.name));
+                }
+            }
+            if tone.id == "poetico" {
+                // Visibly different from the original: not a plain correction.
+                let words = |t: &str| -> std::collections::HashSet<String> {
+                    t.split_whitespace().map(|w| w.to_lowercase()).collect()
+                };
+                let (a, b) = (words(TONES_SAMPLE), words(&out));
+                let shared = a.intersection(&b).count();
+                if shared * 100 >= a.len().max(b.len()) * 70 {
+                    tone_failures.push(format!(
+                        "Poético is too close to the original ({shared} shared words): {out}"
+                    ));
+                }
             }
             if tone.id == "mais_curto" {
-                assert!(
-                    out.chars().count() < TONES_SAMPLE.chars().count() * 85 / 100,
-                    "Mais curto did not shorten enough: {} vs {}",
-                    out.chars().count(),
-                    TONES_SAMPLE.chars().count()
-                );
+                if out.chars().count() >= TONES_SAMPLE.chars().count() * 85 / 100 {
+                    tone_failures.push(format!(
+                        "Mais curto did not shorten enough: {} vs {}",
+                        out.chars().count(),
+                        TONES_SAMPLE.chars().count()
+                    ));
+                }
             }
         }
 
@@ -650,6 +673,10 @@ mod tests {
             std::fs::write(path, &report).unwrap();
         }
         engine.unload();
+        assert!(
+            tone_failures.is_empty(),
+            "Tone failures: {tone_failures:#?}"
+        );
         assert!(failures.is_empty(), "Traduzir failures: {failures:#?}");
     }
 }

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Tauri 2 (Rust + React/TypeScript, Bun), tauri-specta (bindings), tauri-plugin-store, reqwest (streaming SSE), enigo, crate `windows` 0.61, `nvml-wrapper`, llama.cpp `llama-server`.
 
-**Spec:** `docs/superpowers/specs/2026-11-09-handy-plus-correcao-design.md`
+**Spec:** `docs/handy-plus/design-da-correcao.md`
 
 ## Global Constraints
 
@@ -38,12 +38,14 @@
 ### Task 1: Identidade do Handy Plus e importação das configurações do Handy
 
 **Files:**
+
 - Modify: `src-tauri/tauri.conf.json` (`productName`, `identifier`, `bundle.createUpdaterArtifacts`, remover `bundle.windows.signCommand`)
 - Modify: `src-tauri/src/main.rs` (desligar o atualizador)
 - Create: `src-tauri/src/correction/mod.rs`, `src-tauri/src/correction/import.rs`
 - Modify: `src-tauri/src/lib.rs` (declarar `mod correction;` e chamar a importação no início do `setup`, antes de qualquer `get_settings`)
 
 **Interfaces:**
+
 - Produces: `correction::import::import_from_handy(src_dir: &Path, dst_dir: &Path) -> std::io::Result<ImportOutcome>` com `enum ImportOutcome { Imported, AlreadyHasSettings, NoHandyData }`.
 
 - [ ] **Step 1: Instalar as ferramentas de build (pedir confirmação ao usuário antes de cada instalação)**
@@ -62,6 +64,7 @@ Verificação: `bun run tauri dev` abre o Handy original sem erros (ainda com o 
 #[test] fn does_nothing_without_handy_data()
 // src não existe => NoHandyData; dst continua vazio
 ```
+
 Usar `tempfile::tempdir()` (já é dev-dependency).
 
 - [ ] **Step 3: Run tests to verify they fail**
@@ -81,7 +84,7 @@ Expected: PASS
 - [ ] **Step 6: Ligar a identidade nova**
 
 - `tauri.conf.json`: `"productName": "Handy Plus"`, `"identifier": "com.handyplus.app"`, `"createUpdaterArtifacts": false`, remover `signCommand`.
-- `main.rs`: antes de tudo, `std::env::set_var("HANDY_DISABLE_UPDATER", "1")` (o atualizador baixaria o Handy oficial por cima). 
+- `main.rs`: antes de tudo, `std::env::set_var("HANDY_DISABLE_UPDATER", "1")` (o atualizador baixaria o Handy oficial por cima).
 - `lib.rs` `setup`: `import_from_handy(%APPDATA%\com.pais.handy, app_data_dir)` usando `crate::portable::app_data_dir`; logar o resultado. Pular no modo portátil.
 
 - [ ] **Step 7: Verificar no app**
@@ -101,12 +104,15 @@ git commit -m "feat: rename to Handy Plus and import settings from Handy on firs
 ### Task 2: Configurações da correção, provedor Gemini e atalho
 
 **Files:**
+
 - Create: `src-tauri/src/correction/settings.rs`
 - Modify: `src-tauri/src/settings.rs` (Gemini em `default_post_process_providers`; binding `correct_selection` em `get_default_settings`)
 - Modify: `src-tauri/src/lib.rs` (registrar comandos em `collect_commands!`)
 
 **Interfaces:**
+
 - Produces:
+
 ```rust
 #[derive(Serialize, Deserialize, Debug, Clone, Type, PartialEq)]
 pub struct CorrectionTone { pub id: String, pub name: String, pub goal: String }
@@ -135,6 +141,7 @@ pub fn write_correction_settings(app: &AppHandle, s: &CorrectionSettings);
 #[tauri::command] #[specta::specta] pub fn get_correction_settings_cmd(app: AppHandle) -> CorrectionSettings;
 #[tauri::command] #[specta::specta] pub fn set_correction_settings_cmd(app: AppHandle, settings: CorrectionSettings) -> Result<(), String>;
 ```
+
 - Binding id `correct_selection` (nome "Correct Selection") em `AppSettings.bindings`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -199,11 +206,14 @@ git commit -m "feat: add correction settings store, Gemini provider and correct_
 ### Task 3: Montagem do prompt, limpeza da resposta e progresso
 
 **Files:**
+
 - Create: `src-tauri/src/correction/text.rs`
 - Modify: `src-tauri/src/actions.rs` (tornar `strip_think_block` e `strip_invisible_chars` `pub(crate)`)
 
 **Interfaces:**
+
 - Produces:
+
 ```rust
 pub const MAX_CORRECTION_CHARS: usize = 8000;
 pub fn build_messages(rules: &str, goal: &str, text: &str) -> (String /*system*/, String /*user*/);
@@ -269,12 +279,15 @@ git commit -m "feat: add correction prompt building, output cleanup and progress
 ### Task 4: Motor local (`llama-server` como processo auxiliar)
 
 **Files:**
+
 - Create: `scripts/fetch-llama-server.ps1`
 - Modify: `.gitignore` (`src-tauri/resources/llama-server/`)
 - Create: `src-tauri/src/correction/local_engine.rs`
 
 **Interfaces:**
+
 - Produces:
+
 ```rust
 pub struct LocalEngine { /* Mutex<Option<Running>>; Running { child, port, model_path, gpu } */ }
 pub enum EngineError { BinaryMissing, ModelMissing(String), StartFailed(String), Crashed }
@@ -290,6 +303,7 @@ impl LocalEngine {
 }
 pub fn server_args(model: &Path, port: u16, gpu: bool) -> Vec<String>;
 ```
+
 O `LocalEngine` fica em `app.manage(Arc<LocalEngine>)` (feito na Task 8).
 
 - [ ] **Step 1: Script de download**
@@ -352,11 +366,14 @@ git commit -m "feat: manage a local llama-server process for text correction"
 ### Task 5: Cliente de chat com streaming
 
 **Files:**
+
 - Create: `src-tauri/src/correction/stream.rs`
 
 **Interfaces:**
+
 - Consumes: `PostProcessProvider`, `llm_client::send_chat_completion_with_schema` (Anthropic e fallback).
 - Produces:
+
 ```rust
 pub struct ChatTarget { pub base_url: String, pub api_key: String, pub model: String,
                         pub format: PostProcessApiFormat, pub local: bool }
@@ -424,11 +441,14 @@ git commit -m "feat: stream chat completions for text correction"
 ### Task 6: Proteção da placa de vídeo
 
 **Files:**
+
 - Create: `src-tauri/src/correction/gpu_guard.rs`
 - Modify: `src-tauri/Cargo.toml` (`nvml-wrapper` em `[target.'cfg(windows)'.dependencies]`; feature `Win32_UI_Shell` no crate `windows`)
 
 **Interfaces:**
+
 - Produces:
+
 ```rust
 pub const LOAD_MARGIN_BYTES: u64 = 1_536 * 1024 * 1024;   // folga ao carregar
 pub const IDLE_MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;  // abaixo disso, descarregar
@@ -484,11 +504,14 @@ git commit -m "feat: keep the correction model off the GPU when games need it"
 ### Task 7: Copiar a seleção e colar o resultado
 
 **Files:**
+
 - Create: `src-tauri/src/correction/selection.rs`
 - Modify: `src-tauri/src/input.rs` (`send_copy_ctrl_c`), `src-tauri/src/clipboard.rs` (`with_enigo` → `pub(crate)`; nova `paste_correction`)
 
 **Interfaces:**
+
 - Produces:
+
 ```rust
 // input.rs
 pub fn send_copy_ctrl_c(enigo: &mut Enigo, hold_ms: u64) -> Result<(), String>;
@@ -547,12 +570,15 @@ git commit -m "feat: capture the selected text and paste corrections back"
 ### Task 8: Sessão de correção, atalhos temporários e evento para o painel
 
 **Files:**
+
 - Create: `src-tauri/src/correction/session.rs`
 - Modify: `src-tauri/src/actions.rs` (entradas no `ACTION_MAP`), `src-tauri/src/lib.rs` (`manage` do engine e da sessão, `spawn_watcher`, evento em `collect_events!`, matar o engine em `RunEvent::Exit`)
 
 **Interfaces:**
+
 - Consumes: Tasks 2–7.
 - Produces:
+
 ```rust
 #[derive(Clone, Debug, Serialize, Deserialize, Type, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -578,6 +604,7 @@ pub fn should_start(dictation_recording: bool, session_active: bool) -> bool;
 pub fn check_text(text: &str) -> Result<(), CorrectionErrorCode>;
 pub struct CorrectionSessionState { /* AtomicBool active, Mutex<Option<JoinHandle>> etc. */ }
 ```
+
 Bindings temporárias (ids): `correction_cancel` → `escape`; `correction_apply` → `enter`; `correction_tone_1` … `correction_tone_9` → `1` … `9`. Não aparecem na tela de atalhos.
 
 - [ ] **Step 1: Write the failing tests**
@@ -610,6 +637,7 @@ Bindings temporárias (ids): `correction_cancel` → `escape`; `correction_apply
     assert_eq!(check_text("oi"), Ok(()));
 }
 ```
+
 `#[derive(Debug, PartialEq)]` em `SessionCommand`.
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -621,6 +649,7 @@ Expected: FAIL
 
 `CorrectSelectionAction` no `ACTION_MAP` com chave `correct_selection`: `start` não faz nada; `stop` (tecla solta) chama `session::begin(app)` se `should_start(audio_manager.is_recording(), state.active)`. Ações `correction_*` chamam `session::input(app, SessionInput::…)`.
 `begin` (numa task tokio):
+
 1. `capture_selection` → erro vira painel `Error` (some após 3 s).
 2. `check_text`; registrar `correction_cancel`.
 3. Escolher alvo: `Cloud(CloudModel)` → `ChatTarget` com `base_url`/`api_format` do provedor em `settings.post_process_providers` e chave de `settings.post_process_api_keys`. `Local` → sem `local_model_path` ou arquivo inexistente → `NoModelChosen`/`ModelMissing` (Review Focus 5); se o engine não está carregado e `!has_room(free_vram_bytes(), tamanho do arquivo)` → fase `NeedsFallback` com `Cloud` (se `fallback` configurado) e `Cpu`, registrando `correction_apply` e dígitos.
@@ -628,8 +657,8 @@ Expected: FAIL
 5. `Generating`: `stream_chat` com `build_messages(style_rules, tones[i].goal, original)`, acumulando texto e emitindo `gen_progress = generation_progress(...)` no máximo a cada 50 ms. Esc → abortar a task.
 6. `Preview`: `clean_output`, `gen_progress = 1.0`, `elapsed_ms`; registrar `correction_apply` e `correction_tone_1..N` (N = `min(9, tones.len())`).
 7. `Apply`: desregistrar temporárias, esconder o painel, `refocus(hwnd)`, `paste_correction`, fase `Applied` por 2 s. `Regenerate(i)` volta ao passo 5 a partir do **original**. `Cancel`: desregistrar, esconder.
-Sempre: `engine.touch()` ao usar; ao terminar por qualquer caminho, desregistrar temporárias e `active = false`.
-Overlay: chamar `overlay::show_correction_overlay(app)` (Task 9) ao entrar em `Loading`/`Generating`/`Preview`/`NeedsFallback`; `hide_recording_overlay` ao sair.
+   Sempre: `engine.touch()` ao usar; ao terminar por qualquer caminho, desregistrar temporárias e `active = false`.
+   Overlay: chamar `overlay::show_correction_overlay(app)` (Task 9) ao entrar em `Loading`/`Generating`/`Preview`/`NeedsFallback`; `hide_recording_overlay` ao sair.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -648,11 +677,13 @@ git commit -m "feat: run text correction sessions from the correct_selection sho
 ### Task 9: Painel da correção na pílula
 
 **Files:**
+
 - Modify: `src-tauri/src/overlay.rs` (tamanho e função do estado `correction`)
 - Create: `src/overlay/correction/CorrectionPanel.tsx`, `src/overlay/correction/CorrectionPanel.css`, `src/overlay/correction/diff.ts`, `src/overlay/correction/diff.test.ts`
 - Modify: `src/overlay/RecordingOverlay.tsx` (renderizar o painel no estado `correction`), `src/i18n/locales/en/translation.json`, `src/i18n/locales/pt/translation.json`
 
 **Interfaces:**
+
 - Consumes: `events.correctionUpdateEvent` (bindings), estados da Task 8.
 - Produces: `overlay::show_correction_overlay(app: &AppHandle)`; `const CORRECTION_WIDTH: f64 = 480.0; const CORRECTION_HEIGHT: f64 = 260.0;`; `diffWords(before: string, after: string): DiffPart[]` com `type DiffPart = { text: string; kind: "same" | "added" | "removed" }`.
 
@@ -665,17 +696,25 @@ git commit -m "feat: run text correction sessions from the correct_selection sho
     assert_eq!(overlay_dimensions("recording"), (OVERLAY_WIDTH, OVERLAY_HEIGHT));
 }
 ```
+
 ```ts
 // src/overlay/correction/diff.test.ts  (bun test)
 test("marks changed words", () => {
   expect(diffWords("oi mano blz", "Oi, mano, beleza")).toEqual([
-    { text: "oi", kind: "removed" }, { text: "Oi,", kind: "added" }, { text: " ", kind: "same" },
-    { text: "mano", kind: "removed" }, { text: "mano,", kind: "added" }, { text: " ", kind: "same" },
-    { text: "blz", kind: "removed" }, { text: "beleza", kind: "added" },
+    { text: "oi", kind: "removed" },
+    { text: "Oi,", kind: "added" },
+    { text: " ", kind: "same" },
+    { text: "mano", kind: "removed" },
+    { text: "mano,", kind: "added" },
+    { text: " ", kind: "same" },
+    { text: "blz", kind: "removed" },
+    { text: "beleza", kind: "added" },
   ]);
 });
 test("identical text has no changes", () => {
-  expect(diffWords("tudo certo", "tudo certo").every((p) => p.kind === "same")).toBe(true);
+  expect(
+    diffWords("tudo certo", "tudo certo").every((p) => p.kind === "same"),
+  ).toBe(true);
 });
 ```
 
@@ -688,14 +727,15 @@ Expected: FAIL
 
 `overlay.rs`: `overlay_dimensions("correction")` devolve o tamanho novo; o posicionamento do Windows passa a usar as dimensões do estado atual (hoje ele só distingue streaming via `WINDOWS_OVERLAY_IS_STREAMING`); `show_correction_overlay` = `show_overlay_state(app, "correction")`.
 `diffWords`: tokens por `/(\s+)/` mantendo os espaços, LCS por token; dentro de um trecho alterado, as partes `removed` vêm antes das `added`.
-`CorrectionPanel` segue o mockup aprovado (`.superpowers/brainstorm/618-1794248153/content/correcao-fluxo-v2.html`, copiado para a pasta do projeto): pílula com o tom e o modelo; acima dela o cartão com
+`CorrectionPanel` segue o mockup aprovado ([`docs/handy-plus/mockups/painel-de-correcao.html`](mockups/painel-de-correcao.html)): pílula com o tom e o modelo; acima dela o cartão com
+
 - `Loading`: barra "Carregando modelo" (percentual quando `load_progress` existe, animação indeterminada quando não) e "Gerando texto" apagada;
 - `Generating`: primeira barra verde com ✓, segunda com `gen_progress` e o texto chegando com cursor piscando;
 - `Preview`: texto com `added` em verde e `removed` riscado em vermelho, lista numerada de tons à direita com o atual destacado, dicas `Enter aplicar · 1–N outro tom · Esc cancelar`, pílula "Pronto em X s";
 - `NeedsFallback`: "Placa de vídeo cheia" com as opções numeradas (1 Nuvem, 2 Processador) e `Esc cancelar`;
 - `Applied`: só a pílula "✓ Corrigido · Ctrl + Z desfaz";
 - `Error`: só a pílula com a mensagem do código.
-Textos (chaves em `overlay.correction.*`, `en` e `pt`): "Carregando modelo", "Gerando texto", "Pronto em {{s}} s", "Corrigido", "Ctrl + Z desfaz", "aplicar", "outro tom", "cancelar", "Placa de vídeo cheia", "Nuvem", "Processador", "Nenhum texto selecionado", "Texto grande demais", "Escolha um modelo nas configurações", "Modelo não encontrado", "O modelo local falhou", "A IA na nuvem falhou". Cores e fontes seguem o `RecordingOverlay.css`.
+  Textos (chaves em `overlay.correction.*`, `en` e `pt`): "Carregando modelo", "Gerando texto", "Pronto em {{s}} s", "Corrigido", "Ctrl + Z desfaz", "aplicar", "outro tom", "cancelar", "Placa de vídeo cheia", "Nuvem", "Processador", "Nenhum texto selecionado", "Texto grande demais", "Escolha um modelo nas configurações", "Modelo não encontrado", "O modelo local falhou", "A IA na nuvem falhou". Cores e fontes seguem o `RecordingOverlay.css`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -714,12 +754,15 @@ git commit -m "feat: show correction progress and preview in the overlay"
 ### Task 10: Tela "Correção de texto" nas configurações
 
 **Files:**
+
 - Create: `src-tauri/src/correction/models.rs`
 - Create: `src/components/settings/correction/CorrectionSettings.tsx`, `CorrectionProviderSection.tsx`, `CorrectionTonesEditor.tsx`, `index.ts`
 - Modify: `src/components/settings/index.ts`, `src/components/Sidebar.tsx` (seção `correction`, ícone `SpellCheck` do lucide, sempre habilitada), `src-tauri/src/lib.rs` (comando), locales (`en`, `pt`; demais com o texto em inglês)
 
 **Interfaces:**
+
 - Produces:
+
 ```rust
 #[derive(Serialize, Debug, Clone, Type, PartialEq)]
 pub struct LocalModel { pub path: String, pub label: String, pub size_bytes: u64 }
@@ -740,6 +783,7 @@ pub fn find_local_models(dir: &Path) -> Vec<LocalModel>;
     assert!(find_local_models(Path::new(r"Z:\nao\existe")).is_empty());
 }
 ```
+
 Busca até 3 níveis, ordenado por `label`.
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -750,6 +794,7 @@ Expected: FAIL
 - [ ] **Step 3: Implement backend e tela**
 
 A tela usa `commands.getCorrectionSettingsCmd`/`setCorrectionSettingsCmd`/`listLocalModels` e, para chaves de API, `changePostProcessApiKeySetting` (já existe). Seções, no visual de `PostProcessingSettings`:
+
 1. Atalho: `<ShortcutInput shortcutId="correct_selection" />`.
 2. Provedor: "Local" + cada provedor de `settings.post_process_providers` exceto `apple_intelligence`.
 3. Se Local: pasta de modelos (texto + botão de escolher pasta via `tauri-plugin-dialog`), modelo (lista de `listLocalModels`, mostrando tamanho em GB), tempo para descarregar (mesmas opções do `ModelUnloadTimeout.tsx`).
@@ -775,7 +820,8 @@ git commit -m "feat: add the text correction settings page"
 ### Task 11: Modelo recomendado e verificação de ponta a ponta
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-11-09-handy-plus-correcao-design.md` (apenas se algo do spec mudou durante a construção)
+
+- Modify: `docs/handy-plus/design-da-correcao.md` (apenas se algo do spec mudou durante a construção)
 
 - [ ] **Step 1: Baixar o Gemma 4 E4B em GGUF (pedir confirmação ao usuário com nome do arquivo, origem e tamanho)**
 
@@ -785,6 +831,7 @@ Destino: `D:\IA\LLM\model\<autor>\<repo>\<arquivo>.gguf`, quantização Q4_K_M, 
 
 Run: `bun run tauri dev`
 Conferir e anotar no resumo final:
+
 - Os três textos da tabela do spec, digitados no Bloco de Notas, no WhatsApp, no Discord e no navegador: resultado parecido, sem travessão, mantendo "a gente", "tá", "mano".
 - Prévia em ~1 s com modelo carregado; na primeira vez a barra "Carregando modelo" aparece (e mostra percentual a partir da segunda carga).
 - Números trocam o tom; Esc cancela; Enter aplica; Ctrl + Z desfaz no programa.
@@ -819,12 +866,15 @@ Feedback do usuário no teste da Task 11: (1) com texto longo é impossível ver
 ### Task 12: Painel maior, rolagem por teclado e três visões
 
 **Files:**
+
 - Modify: `src-tauri/src/overlay.rs` (`CORRECTION_WIDTH`/`CORRECTION_HEIGHT`)
 - Modify: `src-tauri/src/correction/session.rs` (novas bindings temporárias e campo `view`)
 - Modify: `src/overlay/correction/CorrectionPanel.tsx`, `CorrectionPanel.css`, locales `en`/`pt` (+ inglês nas outras)
 
 **Interfaces:**
+
 - Produces:
+
 ```rust
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -835,10 +885,12 @@ impl CorrectionView { pub fn next(self) -> Self; } // Corrected -> Changes -> Or
 // bindings temporárias novas: correction_view -> "tab", correction_scroll_up -> "up", correction_scroll_down -> "down"
 //   (registradas em Preview e Generating; nomes de tecla conferidos no handy-keys e no global-hotkey)
 ```
+
 - `decide`: `Tab` em Preview → `SessionCommand::NextView`; `ScrollUp`/`ScrollDown` em Generating ou Preview → `SessionCommand::Scroll(-1 | 1)`; em outras fases → `Ignore`.
 - Tamanho: `CORRECTION_WIDTH = 640.0`, `CORRECTION_HEIGHT = 420.0`.
 
 - [ ] **Step 1: Testes que falham**
+
 ```rust
 #[test] fn view_cycles_corrected_changes_original() {
     assert_eq!(CorrectionView::Corrected.next(), CorrectionView::Changes);
@@ -858,6 +910,7 @@ impl CorrectionView { pub fn next(self) -> Self; } // Corrected -> Changes -> Or
 }
 // overlay.rs: correction_state_uses_the_large_panel continua valendo com os valores novos
 ```
+
 - [ ] **Step 2: Rodar e ver falhar.** `cargo test correction::session` → FAIL.
 - [ ] **Step 3: Implementar.** Backend: `view` começa em `Corrected` a cada sessão e volta a `Corrected` a cada Regenerate; `Scroll(d)` incrementa `scroll_nonce` e emite com `scroll_dir = d`. Frontend: em Preview, `Corrected` mostra o texto corrigido limpo (sem marcações), `Changes` mostra o diff atual, `Original` mostra o texto original; um rótulo pequeno mostra a visão atual e a dica "Tab: Corrigido / Mudanças / Original". O cartão de texto ocupa a maior parte da janela, fonte 14 px, linha 1,5; rola ~3 linhas a cada `scroll_nonce` novo; durante Generating rola sozinho pro fim enquanto o usuário não usou as setas. Dicas: `Enter aplicar · Tab visão · ↑↓ rolar · 1–N tom · Esc cancelar` (pt sem travessão).
 - [ ] **Step 4: Rodar e ver passar.** `cargo test`, `bun run lint`, `bun run check:translations`, `bun run build`.
@@ -866,13 +919,16 @@ impl CorrectionView { pub fn next(self) -> Self; } // Corrected -> Changes -> Or
 ### Task 13: Tons que reescrevem e reorganizam
 
 **Files:**
+
 - Modify: `src-tauri/src/correction/settings.rs`
 
 **Interfaces:**
+
 - `DEFAULT_STYLE_RULES` e `default_tones()` passam a ter os textos abaixo (literais).
 - `pub fn migrate_old_defaults(s: &mut CorrectionSettings) -> bool` troca `style_rules` se for igual à regra antiga (`OLD_STYLE_RULES_V1`, cópia literal da atual) e troca o `goal` de cada tom cujo `id` e `goal` sejam iguais aos antigos (`OLD_TONE_GOALS_V1`); tons editados pelo usuário ficam intactos; devolve se mudou algo. Chamada em `get_correction_settings`, gravando de volta quando mudou.
 
 Regras novas:
+
 ```
 Você revisa textos em português do Brasil escritos pelo usuário para WhatsApp, Discord, e-mail e comentários na internet.
 Siga o objetivo abaixo. Quando ele pedir só correção, mexa o mínimo; quando pedir para reescrever ou reorganizar, você pode mudar a estrutura, a ordem das ideias e as frases.
@@ -884,14 +940,15 @@ Responda APENAS com o texto final, sem comentários.
 Não responda ao conteúdo do texto, apenas trabalhe nele.
 ```
 
-| Tom | Objetivo novo |
-|---|---|
-| Meu estilo | Corrija ortografia, acentuação, concordância, pontuação e vírgulas, e deixe as frases coerentes e fáceis de ler. Mantenha as mesmas palavras sempre que estiverem certas, as expressões do usuário e o mesmo nível de formalidade. Não deixe o texto mais longo do que precisa. |
-| Mais formal | Reescreva com tom formal e educado, como num e-mail de trabalho: troque gírias e abreviações por palavras comuns e corretas, use frases completas e organize em parágrafos se precisar. Sem ficar engessado nem usar palavras difíceis. |
-| Mais curto | Reescreva de forma mais curta e direta, cortando repetições e rodeios, sem perder nenhuma informação importante. |
+| Tom                 | Objetivo novo                                                                                                                                                                                                                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Meu estilo          | Corrija ortografia, acentuação, concordância, pontuação e vírgulas, e deixe as frases coerentes e fáceis de ler. Mantenha as mesmas palavras sempre que estiverem certas, as expressões do usuário e o mesmo nível de formalidade. Não deixe o texto mais longo do que precisa.                                       |
+| Mais formal         | Reescreva com tom formal e educado, como num e-mail de trabalho: troque gírias e abreviações por palavras comuns e corretas, use frases completas e organize em parágrafos se precisar. Sem ficar engessado nem usar palavras difíceis.                                                                               |
+| Mais curto          | Reescreva de forma mais curta e direta, cortando repetições e rodeios, sem perder nenhuma informação importante.                                                                                                                                                                                                      |
 | Melhorar argumentos | Reorganize o texto para convencer melhor: comece pela ideia principal, coloque os argumentos numa ordem lógica, junte ou separe frases quando ajudar, ligue as ideias com conectivos simples e termine com uma conclusão clara. Pode mudar bastante a estrutura, mas não invente fatos nem mude a opinião do usuário. |
 
 - [ ] **Step 1: Testes que falham**
+
 ```rust
 #[test] fn migrates_untouched_old_defaults() {
     let mut s = CorrectionSettings { style_rules: OLD_STYLE_RULES_V1.into(), tones: old_tones_v1(), ..Default::default() };
@@ -912,6 +969,7 @@ Não responda ao conteúdo do texto, apenas trabalhe nele.
     assert!(default_tones()[3].goal.contains("Reorganize"));
 }
 ```
+
 - [ ] **Step 2: Rodar e ver falhar.**
 - [ ] **Step 3: Implementar.**
 - [ ] **Step 4: Teste real (ignorado) com o Gemma** (`HANDY_PLUS_TEST_GGUF`): um texto de opinião desorganizado de ~5 frases (no estilo do usuário, informal e sem vírgulas) passado pelos 4 tons; anotar no relatório as 4 saídas. Esperado: "Mais formal" troca gírias e completa frases; "Melhorar argumentos" muda visivelmente a ordem e a estrutura; nenhum travessão.
@@ -920,14 +978,17 @@ Não responda ao conteúdo do texto, apenas trabalhe nele.
 ### Task 14: Atalho sem seleção pega o texto da caixa inteira
 
 **Files:**
+
 - Modify: `src-tauri/src/correction/selection.rs`, `src-tauri/src/input.rs`
 
 **Interfaces:**
+
 - `pub fn send_select_all_ctrl_a(enigo: &mut Enigo, hold_ms: u64) -> Result<(), String>` em `input.rs`.
 - `capture_selection`: quando a primeira cópia não traz texto, envia Ctrl+A, espera ~60 ms e tenta copiar de novo (mesma lógica de salvar/restaurar, tudo sob `PASTE_LOCK`); `Captured` ganha `pub whole_field: bool`. Se ainda vier vazio → `NothingSelected`.
 - `fn after_first_copy(first: &str) -> CaptureStep` puro, com `enum CaptureStep { Done, TrySelectAll }`.
 
 - [ ] **Step 1: Teste que falha**
+
 ```rust
 #[test] fn empty_first_copy_tries_select_all() {
     assert_eq!(after_first_copy(""), CaptureStep::TrySelectAll);
@@ -935,6 +996,7 @@ Não responda ao conteúdo do texto, apenas trabalhe nele.
     assert_eq!(after_first_copy("oi"), CaptureStep::Done);
 }
 ```
+
 - [ ] **Step 2 a 4:** falhar, implementar, passar (`cargo test`).
 - [ ] **Step 5: Commit.** `feat: correct the whole text box when nothing is selected`
 
@@ -947,19 +1009,23 @@ Spec: seção 14 do design. O usuário aprovou o botão flutuante; o tom "Desenv
 ### Task 15: Tom "Desenvolver"
 
 **Files:**
+
 - Modify: `src-tauri/src/correction/settings.rs`, `src-tauri/src/correction/stream.rs` (teste real ignorado)
 
 **Interfaces:**
+
 - `CorrectionSettings` ganha `pub defaults_version: u32` (`#[serde(default)]`, 0 para lojas antigas; `Default` = `CURRENT_DEFAULTS_VERSION = 2`).
 - `default_tones()` passa a ter 5 tons; o quinto é `CorrectionTone { id: "desenvolver", name: "Desenvolver", goal: <texto abaixo> }`.
 - `migrate_old_defaults` (renomear para `migrate_defaults`, mantendo o comportamento V1) passa também a: se `defaults_version < 2`, acrescentar "Desenvolver" no fim quando não existir tom com id `desenvolver` e houver menos de 9 tons; depois `defaults_version = 2`. Se o usuário apagar o tom depois, ele não volta.
 
 Objetivo do tom:
+
 ```
 Desenvolva o texto: explique melhor cada ideia, acrescente detalhes, exemplos ou justificativas que deixem o raciocínio completo, e organize em parágrafos se ficar longo. Mantenha o jeito de falar do usuário e a mesma opinião. Não invente fatos específicos, como números, nomes ou datas, que não estavam no texto.
 ```
 
 - [ ] **Step 1: Testes que falham**
+
 ```rust
 #[test] fn defaults_include_desenvolver_last() {
     let t = default_tones();
@@ -984,6 +1050,7 @@ Desenvolva o texto: explique melhor cada ideia, acrescente detalhes, exemplos ou
     assert_eq!(s.defaults_version, 2);
 }
 ```
+
 - [ ] **Step 2: Rodar e ver falhar.**
 - [ ] **Step 3: Implementar.** Ajustar os testes de migração existentes que comparam com `default_tones()` se precisarem.
 - [ ] **Step 4: Teste real (ignorado) com o Gemma:** acrescentar "Desenvolver" ao teste de tons; afirmar que a saída tem pelo menos 130% do tamanho do original e não tem travessão; gravar a saída no arquivo de saída dos tons.
@@ -992,10 +1059,12 @@ Desenvolva o texto: explique melhor cada ideia, acrescente detalhes, exemplos ou
 ### Task 16: Som discreto ao começar e quando a prévia fica pronta
 
 **Files:**
+
 - Create: `src-tauri/resources/correction_start.wav`, `src-tauri/resources/correction_ready.wav` (gerados por script, versionados), `scripts/make-correction-sounds.py`
 - Modify: `src-tauri/src/audio_feedback.rs` (helper `pub(crate)`), `src-tauri/src/correction/settings.rs`, `src-tauri/src/correction/session.rs`, `src/components/settings/correction/CorrectionSettings.tsx`, locales
 
 **Interfaces:**
+
 - `CorrectionSettings` ganha `pub sounds: bool` (`#[serde(default = "default_true")]`, padrão `true`).
 - `audio_feedback::play_resource_sound(app: &AppHandle, file: &str, volume_scale: f32)` — toca um arquivo de `resources/` no dispositivo de saída escolhido, volume = `audio_feedback_volume * volume_scale`, sem depender da chave `audio_feedback` do ditado; assíncrono.
 - `pub const CORRECTION_SOUND_VOLUME: f32 = 0.6;`
@@ -1004,6 +1073,7 @@ Desenvolva o texto: explique melhor cada ideia, acrescente detalhes, exemplos ou
 - Tela: chave "Som ao corrigir" na seção da correção.
 
 - [ ] **Step 1: Teste que falha**
+
 ```rust
 #[test] fn sounds_play_on_start_once_and_on_each_preview() {
     use CorrectionPhase::*;
@@ -1016,16 +1086,19 @@ Desenvolva o texto: explique melhor cada ideia, acrescente detalhes, exemplos ou
 }
 #[test] fn sounds_default_on() { assert!(CorrectionSettings::default().sounds); }
 ```
+
 - [ ] **Step 2–4:** falhar, implementar, passar (`cargo test`, `bun run lint`, `bun run check:translations`, `bun run build`).
 - [ ] **Step 5: Commit.** `feat: play soft sounds when a correction starts and is ready`
 
 ### Task 17: Detectar a caixa de texto em foco (UI Automation)
 
 **Files:**
+
 - Create: `src-tauri/src/correction/text_focus.rs`
 - Modify: `src-tauri/Cargo.toml` (features `Win32_UI_Accessibility`, `Win32_System_Com`, `Win32_System_Ole`/`Variant` se precisar), `src-tauri/src/correction/settings.rs`
 
 **Interfaces:**
+
 ```rust
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldInfo {
@@ -1039,11 +1112,13 @@ pub fn should_show_button(field: Option<&FieldInfo>, enabled: bool, session_acti
 pub fn button_position(rect: (i32, i32, i32, i32), size_px: i32, inset_px: i32) -> (i32, i32);
 // CorrectionSettings ganha: pub floating_button: bool (padrão true), pub button_excluded_apps: Vec<String> (padrão vazio)
 ```
+
 - `focused_field`: COM inicializado na thread (MTA); `editable` = tipo Edit ou Document, habilitado e não somente leitura (ValuePattern `IsReadOnly` quando houver); `password` = `CurrentIsPassword`; `has_text` = valor não vazio (ValuePattern) ou, para Document, `TextPattern.DocumentRange.GetText(1)` não vazio; `rect` = `CurrentBoundingRectangle`; nome do processo via PID. Qualquer erro → `None`. Nunca bloquear mais que ~50 ms (sem chamadas que esperem a janela alvo).
 - `should_show_button`: só `true` se `enabled`, sem sessão ativa, sem tela cheia, campo existe, `editable && !password && has_text`, PID diferente do próprio app e `process_name` fora de `excluded` (comparação sem diferenciar maiúsculas).
 - `button_position`: canto inferior direito por dentro da caixa, `x = right - size - inset`, `y = bottom - size - inset`; caixas menores que o botão + 2×inset → posição à direita da caixa, alinhada embaixo (`x = right + inset`).
 
 - [ ] **Step 1: Testes que falham**
+
 ```rust
 fn f() -> FieldInfo { FieldInfo { hwnd: 1, pid: 10, process_name: "notepad.exe".into(),
     rect: (100, 100, 500, 200), editable: true, password: false, has_text: true } }
@@ -1071,17 +1146,21 @@ fn f() -> FieldInfo { FieldInfo { hwnd: 1, pid: 10, process_name: "notepad.exe".
 /// Manual: abre o Bloco de Notas pelo usuário, não por automação. Só imprime focused_field() a cada 500 ms por 10 s.
 #[test] #[ignore] fn print_focused_field() { /* ... */ }
 ```
+
 (No segundo caso de `button_position`: caixa de 30×20 < 28+12 → `x = 130 + 6 = 136`, `y = 120 - 28 = 92`.)
+
 - [ ] **Step 2–4:** falhar, implementar, passar.
 - [ ] **Step 5: Commit.** `feat: detect the focused text box for the floating button`
 
 ### Task 18: Janela do botão flutuante e clique que corrige
 
 **Files:**
+
 - Create: `src/correction-button/index.html`, `main.tsx`, `CorrectionButton.tsx`, `CorrectionButton.css`; `src-tauri/src/correction/button.rs`
 - Modify: `vite.config.ts` (entrada nova), `src-tauri/src/lib.rs` (criar janela, comando, iniciar o observador), `src-tauri/src/correction/session.rs` (`begin` aceita origem botão), `src/components/settings/correction/CorrectionSettings.tsx` (chave + lista de exclusões), locales
 
 **Interfaces:**
+
 ```rust
 pub const BUTTON_SIZE: f64 = 28.0;            // px lógicos
 pub fn create_button_window(app: &AppHandle);  // label "correction_button": transparente, sem decoração, sempre no topo,
@@ -1092,6 +1171,7 @@ pub fn spawn_button_watcher(app: AppHandle, session_active: Arc<AtomicBool>); //
 #[tauri::command] #[specta::specta] pub fn correction_button_clicked(app: AppHandle);
                                                // esconde o botão e chama session::begin_from_button(app, hwnd do campo)
 ```
+
 - `begin_from_button`: igual ao `begin` do atalho (mesmos bloqueios: ditado em andamento, sessão ativa), mas antes da captura garante que a janela alvo está em primeiro plano (`refocus(hwnd)`) e força o caminho do Ctrl+A (corrige a caixa inteira mesmo que haja uma seleção parcial). Escolha minha: a caixa inteira, porque o botão representa a caixa.
 - Frontend do botão: círculo de 28 px com o ícone do Handy (ou um ícone simples de "✓ texto"), sombra leve, hover mais claro, `onClick` → `commands.correctionButtonClicked()`; sem texto visível (tooltip i18n "Corrigir texto").
 - Tela da correção: chave "Botão flutuante nas caixas de texto" e lista editável "Não mostrar o botão nestes programas" (nomes de executável; adicionar/remover).
@@ -1112,6 +1192,7 @@ Spec: seção 15 do design.
 **Files:** remover `src-tauri/src/correction/button.rs`, `src-tauri/src/correction/text_focus.rs`, `src/correction-button/`; desfazer a entrada do vite, o `correction_button` em `capabilities/default.json`, a criação da janela/observador/saída em `lib.rs`, o comando `correction_button_clicked`, `begin_from_button`/`Origin::Button`/`CaptureMode::WholeField` em `session.rs`/`selection.rs` (o atalho continua: seleção primeiro, Ctrl+A se vazio), os campos `floating_button`/`button_excluded_apps` de `CorrectionSettings` (lojas antigas que ainda tenham esses campos devem continuar carregando: o serde ignora campos desconhecidos — confirmar com um teste), a seção da tela de configurações e as chaves de tradução usadas só por ela (em todas as línguas), e as features do crate `windows` que só o botão usava.
 
 - [ ] **Step 1: Teste**
+
 ```rust
 #[test] fn store_with_removed_button_fields_still_loads() {
     let v = serde_json::json!({"models_dir": "E:\\m", "floating_button": false, "button_excluded_apps": ["x.exe"]});
@@ -1119,6 +1200,7 @@ Spec: seção 15 do design.
     assert_eq!(s.models_dir, r"E:\m");
 }
 ```
+
 - [ ] **Step 2–4:** remover, `cargo test`, `bun run lint`, `bun run check:translations`, `bun run build` (bindings.ts regenerado por uma execução de debug).
 - [ ] **Step 5: Commit.** `refactor: drop the floating button that most apps could not support`
 
@@ -1129,9 +1211,11 @@ Spec: seção 15 do design.
 - `CURRENT_DEFAULTS_VERSION = 3`; `default_tones()` ganha no fim `CorrectionTone { id: "traduzir", name: "Traduzir", goal: <abaixo> }`; `migrate_defaults`: se `defaults_version < 3`, acrescenta "Traduzir" quando não houver tom com id `traduzir` e houver menos de 9 tons.
 
 Objetivo:
+
 ```
 Traduza o texto. Se ele estiver em português, traduza para o inglês; se já estiver em inglês, traduza para o português do Brasil. Use uma tradução natural, como uma pessoa nativa escreveria, mantendo o mesmo tom, o mesmo nível de formalidade e as mesmas ideias. Não explique a tradução.
 ```
+
 - [ ] **Step 1: Testes** — `defaults_include_traduzir_last` (6 tons, último `traduzir`); `v2_store_gets_traduzir_once` (como o teste do Desenvolver); `full_tone_list_is_not_extended` continua valendo.
 - [ ] **Step 4b: Teste real (ignorado) com o Gemma:** os textos do spec seção 11 pelo tom Traduzir saem em inglês (sem palavras como "você", "não", "muito"; contém palavras inglesas comuns); um texto em inglês sai em português. Sem travessão (a regra global de travessão vale também em inglês).
 - [ ] **Step 5: Commit.** `feat: add a Traduzir tone for Portuguese and English`
@@ -1141,6 +1225,7 @@ Traduza o texto. Se ele estiver em português, traduza para o inglês; se já es
 **Files:** `src-tauri/src/overlay.rs`, `src-tauri/src/correction/session.rs`, `src-tauri/src/lib.rs`, `src/overlay/correction/*`, locales
 
 **Interfaces:**
+
 ```rust
 // overlay.rs: CORRECTION_WIDTH = 760.0, CORRECTION_HEIGHT = 460.0
 // SessionInput ganha: CopyKey (Ctrl+C), Shortcut (o atalho de correção apertado de novo), Ui(UiAction)
@@ -1151,11 +1236,13 @@ pub enum UiAction { Apply, Copy, Cancel, Tone(u8), View(CorrectionView) }
 // SessionCommand ganha: Copy, SetView(CorrectionView)
 // binding temporária nova: correction_copy -> "ctrl+c" (só em Preview)
 ```
+
 - `decide`: em Preview, `CopyKey`/`Ui(Copy)` → `Copy`; `Ui(Apply)` → `Apply`; `Ui(Cancel)` → `Cancel`; `Ui(Tone(n))` → `Regenerate(n-1)` se válido; `Ui(View(v))` → `SetView(v)`. Em Loading/Generating/Preview/NeedsFallback, `Shortcut` e `Ui(Cancel)` → `Cancel`. Em NeedsFallback, `Ui(Tone(n))` escolhe a opção n (igual ao dígito).
 - `Copy`: põe o texto corrigido na área de transferência (de propósito, como no caso Copied), fecha o painel e mostra a pílula "Correção copiada" por 2 s.
 - O atalho de correção apertado com uma sessão aberta deixa de ser ignorado e vira `SessionInput::Shortcut`.
 - Frontend: rodapé do painel com botões Aplicar (destaque), Copiar e Cancelar (só em Preview; Cancelar também em Loading/Generating); a lista de tons e as abas de visão são clicáveis; rolagem com a rodinha no cartão de texto (`overflow-y: auto`, a janela aceita o mouse com `accept_first_mouse`); `onMouseDown` com `preventDefault` em todos os controles para nunca pegar foco. Margem interna do cartão 20 px, entre blocos 12 px, texto 15 px.
 - [ ] **Step 1: Testes**
+
 ```rust
 #[test] fn ui_actions_map_to_commands_in_preview() {
     let p = CorrectionPhase::Preview;
@@ -1174,6 +1261,7 @@ pub enum UiAction { Apply, Copy, Cancel, Tone(u8), View(CorrectionView) }
 }
 #[test] fn copy_key_only_bound_in_preview() { /* binding set por fase: correction_copy só em Preview */ }
 ```
+
 - [ ] **Step 2–4:** falhar, implementar, passar (`cargo test`, lint, check:translations, build).
 - [ ] **Step 5: Commit.** `feat: mouse controls, copy and close-again for the correction panel`
 
@@ -1182,6 +1270,7 @@ pub enum UiAction { Apply, Copy, Cancel, Tone(u8), View(CorrectionView) }
 **Files:** Create `src-tauri/src/correction/input_hooks.rs`; Modify `session.rs`, `lib.rs`
 
 **Interfaces:**
+
 ```rust
 pub enum HookEvent { MouseDown { x: i32, y: i32 }, TypingKey }   // TypingKey: tecla de texto não injetada
 pub fn start_hooks(on_event: impl Fn(HookEvent) + Send + Sync + 'static); // thread própria com loop de mensagens,
@@ -1191,6 +1280,7 @@ pub fn is_typing_key(vk: u32, injected: bool, ctrl_or_alt_down: bool) -> bool; /
                                                                               // setas, Tab, Enter, Esc, e com Ctrl/Alt
 pub fn click_outside(x: i32, y: i32, panel: (i32, i32, i32, i32)) -> bool;
 ```
+
 - Ganchos sempre instalados (servem também à Task 23), mas a sessão só reage enquanto aberta: em Loading/Generating/Preview/NeedsFallback, `MouseDown` fora do retângulo físico atual da janela `recording_overlay` → `Cancel`; `TypingKey` → `Cancel` (a tecla segue para o programa). As teclas que o painel usa (dígitos, Tab, setas, Enter, Esc, Ctrl+C) continuam com as bindings temporárias e não contam como digitação enquanto registradas. Eventos injetados pelo próprio app (Ctrl+C/Ctrl+A/Ctrl+V do enigo) são ignorados (`LLKHF_INJECTED`/`LLMHF_INJECTED`).
 - O callback do gancho nunca bloqueia: só envia para um canal e retorna `CallNextHookEx` imediatamente.
 - [ ] **Step 1: Testes** para `is_typing_key` (tabela: 'A', '1', espaço, Backspace → true; injetada, Ctrl+A, Shift sozinho, F5, seta, Enter, Esc, Tab → false) e `click_outside` (dentro, borda, fora).
@@ -1202,6 +1292,7 @@ pub fn click_outside(x: i32, y: i32, panel: (i32, i32, i32, i32)) -> bool;
 **Files:** Create `src-tauri/src/correction/typing_hint.rs`; Modify `settings.rs` (`typing_hint: bool`, padrão true), `overlay.rs` (estado `"hint"`, ~340 × 44), `session.rs`/`lib.rs`, `src/overlay/` (pílula da dica, clicável), tela de configurações (chave "Mostrar dica do atalho ao digitar"), locales
 
 **Interfaces:**
+
 ```rust
 pub const HINT_MIN_KEYS: u32 = 12;
 pub const HINT_IDLE_MS: u64 = 1500;
@@ -1213,6 +1304,7 @@ impl HintTracker {
     pub fn poll(&mut self, now_ms: u64, blocked: bool) -> Option<isize>;
 }
 ```
+
 - Regras: conta só `TypingKey` (Task 22) na janela em primeiro plano; trocar de janela zera a contagem; quando `contagem >= HINT_MIN_KEYS` e passaram `HINT_IDLE_MS` sem teclas e `blocked == false` e a janela ainda não viu a dica → mostra e marca a janela. `blocked` = dica desligada, tela cheia, ditado em andamento, correção aberta ou janela do próprio Handy Plus.
 - A dica: pílula no lugar da pílula do Handy (estado `"hint"`), texto `"<atalho> para melhorar o texto"` com o atalho atual formatado (ex.: "Ctrl + \"), some após `HINT_SHOW_MS` ou na próxima `TypingKey`; clique → mesmo caminho do atalho (`session::begin`), com o foco ainda no programa do usuário (a janela da pílula não pega foco). Não toca som.
 - [ ] **Step 1: Testes** do `HintTracker`: não mostra antes de 12 teclas; não mostra antes de 1,5 s parado; mostra uma vez por janela; trocar de janela zera; `blocked` impede e não marca a janela.
@@ -1228,6 +1320,7 @@ Spec: seção 16 do design.
 ### Task 24: Aplicar cola com Ctrl + V e registra o resultado
 
 **Files:** `src-tauri/src/clipboard.rs`, `src-tauri/src/correction/session.rs`
+
 - `correction_paste_method(_: PasteMethod) -> PasteMethod` passa a devolver sempre `PasteMethod::CtrlV` (a correção é texto puro). Atualizar o teste existente para a regra nova.
 - `Session::apply` registra `info!` com o resultado: "pasted", "refocus failed, left on clipboard" ou o erro (sem o texto).
 - [ ] Teste: `correction_always_pastes_with_ctrl_v` cobre todas as variantes de `PasteMethod`.
@@ -1236,6 +1329,7 @@ Spec: seção 16 do design.
 ### Task 25: Estilos e ajustes nas configurações (modelo de dados e migração)
 
 **Files:** `src-tauri/src/correction/settings.rs` (+ teste real ignorado em `stream.rs`)
+
 - `CorrectionTone` ganha `kind: ToneKind` (`#[serde(default)]`, padrão `Style`); `enum ToneKind { Style, Adjust }` (snake_case).
 - `default_tones()`: estilos `meu_estilo` "Meu estilo", `mais_formal` "Formal", `descolado` "Descolado", `poetico` "Poético"; ajustes `mais_curto` "Encurtar", `desenvolver` "Desenvolver", `traduzir` "Traduzir", `melhorar_argumentos` "Melhorar argumentos" (ids antigos mantidos para a migração reconhecer).
 - Objetivos novos:
@@ -1251,6 +1345,7 @@ Spec: seção 16 do design.
 ### Task 26: Sessão espera a escolha, ajustes encadeados e atalho de tradução
 
 **Files:** `src-tauri/src/correction/session.rs`, `src-tauri/src/settings.rs` (binding `translate_selection`), `src-tauri/src/actions.rs`, `src-tauri/src/lib.rs`
+
 - Nova fase `CorrectionPhase::Choosing` (painel aberto com o original e as opções; nada gerado). O atalho de correção abre em Choosing e dispara o carregamento do modelo local em segundo plano (sem gerar); se ainda estiver carregando quando o usuário escolher, mostra Loading normalmente.
 - Lista numerada única: `options = estilos ++ ajustes` (números 1..9 na ordem; acima de 9 só clique). `CorrectionUpdateEvent` passa a levar `styles: Vec<String>`, `adjusts: Vec<String>`, `current_style: Option<u32>`, `applied_adjusts: Vec<u32>` (no lugar de `tones`/`tone_index`).
 - `decide`: em Choosing, Digit/Ui(Tone) de um estilo → `RunStyle(i)`; de um ajuste → `RunAdjust(i)` (sobre o original); Enter → `RunStyle(0)`; Esc/Shortcut/Dismiss/Cancel → Cancel. Em Preview: estilo → `RunStyle(i)` (do original, zera ajustes); ajuste → `RunAdjust(i)` (sobre o texto atual); Enter → Apply; resto como hoje.
@@ -1262,6 +1357,7 @@ Spec: seção 16 do design.
 ### Task 27: Painel e configurações para estilos e ajustes
 
 **Files:** `src/overlay/correction/*`, `src/components/settings/correction/*`, locales
+
 - Painel em Choosing: o texto original no cartão, dica "Escolha um estilo (Enter = Meu estilo)", duas colunas ou dois grupos: **Estilo** (1–4) e **Ajustes** (5–8), clicáveis; barra de carregamento discreta se o modelo ainda estiver carregando.
 - Em Preview: os mesmos dois grupos, com o estilo atual destacado e os ajustes aplicados marcados com ✓ na ordem; rodapé Aplicar / Copiar / Cancelar como hoje.
 - Configurações: duas listas editáveis (Estilos, Ajustes), cada uma com adicionar/apagar/subir/descer, nome + objetivo; o campo de atalho de tradução (`ShortcutInput shortcutId="translate_selection"`).
@@ -1278,6 +1374,7 @@ Spec: seção 17 do design.
 ### Task 28: Ajustes exclusivos, memória das respostas, variação e sem a visão Mudanças
 
 **Files:** `src-tauri/src/correction/session.rs`, `src/overlay/correction/*`, locales
+
 - `CorrectionView` passa a ter só `Corrected` e `Original` (`next()` alterna); remover a visão Changes e o `diff` do painel (manter `diff.ts` só se ainda usado; senão remover com o teste).
 - Estado da sessão: `current_style: Option<usize>`, `current_adjust: Option<usize>` (no lugar de `applied_adjusts: Vec`), `lang` (Task 29 usa; aqui o idioma é sempre o original), e um cache `HashMap<ResultKey, Vec<String>>` com `ResultKey { style: Option<usize>, adjust: Option<usize>, lang: Lang }` e um índice de variação atual por chave.
 - Regras (função pura `plan_choice(state, choice) -> Plan`, testada):
@@ -1291,6 +1388,7 @@ Spec: seção 17 do design.
 ### Task 29: Chave de idioma PT ⇄ EN
 
 **Files:** `src-tauri/src/correction/{session,settings,text}.rs`, `src/overlay/correction/*`, locales
+
 - `enum Lang { Pt, En }`; `fn detect_lang(text: &str) -> Lang` com o crate `whatlang` (já é dependência): inglês → En, qualquer outro → Pt.
 - Sessão começa com `lang = detect_lang(original)`; `SessionInput::ToggleLang` (tecla `t` como binding temporária em Choosing/Preview, e `UiAction::ToggleLang`) troca o idioma alvo: o texto mostrado passa a ser a chave atual com o novo idioma — do cache, ou gerado traduzindo o texto da chave no idioma original com o objetivo de tradução (`TRANSLATE_GOAL_TO_EN` / `TRANSLATE_GOAL_TO_PT`, textos fixos no código, naturais, mantendo tom; o de inglês diz explicitamente que a resposta é toda em inglês e que é exceção à regra de português).
 - `CorrectionUpdateEvent` ganha `lang: Lang` e `source_lang: Lang`; o painel mostra a chave (PT / EN) com o lado ativo destacado, clicável.
@@ -1303,6 +1401,7 @@ Spec: seção 17 do design.
 ### Task 30: Captura espera a área de transferência assentar
 
 **Files:** `src-tauri/src/correction/selection.rs`
+
 - Depois que o texto aparece, continuar consultando a sequência da área de transferência a cada 25 ms e só ler quando ela ficar parada por `SETTLE_MS = 150` (respeitando o limite total atual). Função pura `settled(last_change_ms, now_ms) -> bool` testada.
 - `info!("Captured {} chars (whole_field={})")` sem conteúdo.
 - [ ] Commit: `fix: wait for the clipboard to settle before reading the selection`
@@ -1310,6 +1409,7 @@ Spec: seção 17 do design.
 ### Task 31: Pré-carregar o modelo ao digitar
 
 **Files:** `src-tauri/src/correction/{typing_hint,session,settings}.rs`, tela de configurações, locales
+
 - `CorrectionSettings.preload_on_typing: bool` (padrão true, default por campo).
 - O rastreador da dica (Task 23) ganha um segundo gatilho: ao atingir `HINT_MIN_KEYS` teclas numa janela (sem esperar a pausa), se `preload_on_typing`, provedor local com modelo escolhido, motor não carregado, sem tela cheia, sem ditado, sem sessão aberta e `has_room(free_vram, tamanho do modelo)`, dispara `ensure_loaded` + aquecimento em segundo plano (uma vez por janela; nunca dois ao mesmo tempo; reaproveita o carregamento se a sessão abrir no meio). O vigia da placa e o tempo de descarregar continuam valendo.
 - Função pura `should_preload(...) -> bool` testada.

@@ -1,0 +1,88 @@
+<style>
+  .flow { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 12px; }
+  @media (max-width: 760px) { .flow { grid-template-columns: 1fr; } }
+  .stage { background: #1e1f22; border-radius: 10px; padding: 10px 10px 60px; position: relative; min-height: 290px; color: #dbdee1; font-size: 13px; }
+  .stage .step { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #949ba4; margin-bottom: 8px; }
+  .chatbox { background: #383a40; border-radius: 8px; padding: 9px 10px; line-height: 1.45; }
+  .sel { background: #3d6fd8; color: #fff; border-radius: 2px; }
+  .fixed { color: #fff; }
+  .key { display: inline-block; border: 1px solid #5c5f66; border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 11px; color: #dbdee1; background: #2b2d31; line-height: 1.5; }
+  .pill { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); background: #111214; border: 1px solid #2f3136; border-radius: 999px; padding: 6px 14px; display: flex; align-items: center; gap: 8px; color: #f2f3f5; font-size: 12px; white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.45); }
+  .ok { color: #3ecf8e; font-weight: 700; }
+  .panel { position: absolute; left: 8px; right: 8px; bottom: 50px; background: #111214; border: 1px solid #2f3136; border-radius: 12px; padding: 10px 12px; font-size: 12px; line-height: 1.5; box-shadow: 0 6px 18px rgba(0,0,0,.5); }
+  .phase { display: flex; align-items: center; gap: 8px; margin: 4px 0; color: #b5bac1; }
+  .phase .lbl { width: 108px; flex: none; }
+  .phase .pct { width: 34px; text-align: right; color: #949ba4; flex: none; }
+  .bar { flex: 1; height: 6px; background: #2b2d31; border-radius: 99px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: #f5a524; border-radius: 99px; }
+  .bar i.done { background: #3ecf8e; }
+  .bar i.run { animation: grow 2.4s ease-in-out infinite alternate; }
+  @keyframes grow { from { width: 30%; } to { width: 70%; } }
+  .phase.wait { opacity: .45; }
+  .stream { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2b2d31; color: #f2f3f5; }
+  .caret { display: inline-block; width: 7px; height: 13px; background: #f5a524; vertical-align: -2px; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .add { background: rgba(62,207,142,.18); color: #7ee2b4; border-radius: 2px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 112px; gap: 10px; }
+  .tones { border-left: 1px solid #2b2d31; padding-left: 8px; }
+  .tones div { padding: 3px 6px; border-radius: 6px; display: flex; justify-content: space-between; color: #b5bac1; }
+  .tones .on { background: #2b2d31; color: #fff; }
+  .tones .n { color: #949ba4; }
+  .hint { color: #949ba4; font-size: 11px; margin-top: 8px; padding-top: 6px; border-top: 1px solid #2b2d31; }
+  .note { background: var(--bg-secondary, #f5f5f5); border-radius: 8px; padding: 10px 14px; margin-top: 16px; font-size: 14px; }
+</style>
+
+<h2>B + C juntos, com barras de progresso</h2>
+<p class="subtitle">A prévia da B, a lista rápida de tons da C e uma barra pra cada etapa. Os textos dentro das telas são exemplos.</p>
+
+<div class="flow">
+
+  <div class="stage">
+    <div class="step">1. Seleciona e aperta o atalho</div>
+    <div class="chatbox"><span class="sel">oi mano blz? entao eu vi aquele video q vc mandou ontem</span></div>
+    <div class="panel">
+      <div class="phase"><span class="lbl">Carregando modelo</span><span class="bar"><i class="run" style="width:45%"></i></span><span class="pct">45%</span></div>
+      <div class="phase wait"><span class="lbl">Gerando texto</span><span class="bar"><i style="width:0"></i></span><span class="pct"></span></div>
+    </div>
+    <div class="pill">Meu estilo · gemma4</div>
+  </div>
+
+  <div class="stage">
+    <div class="step">2. O texto vai aparecendo</div>
+    <div class="chatbox"><span class="sel">oi mano blz? entao eu vi aquele video q vc mandou ontem</span></div>
+    <div class="panel">
+      <div class="phase"><span class="lbl">Carregando modelo</span><span class="bar"><i class="done" style="width:100%"></i></span><span class="pct ok">✓</span></div>
+      <div class="phase"><span class="lbl">Gerando texto</span><span class="bar"><i style="width:60%"></i></span><span class="pct">60%</span></div>
+      <div class="stream">Oi, mano, beleza? Então, eu vi aquele vídeo <span class="caret"></span></div>
+    </div>
+    <div class="pill">Meu estilo · gemma4</div>
+  </div>
+
+  <div class="stage">
+    <div class="step">3. Confere a prévia e escolhe</div>
+    <div class="chatbox"><span class="sel">oi mano blz? entao eu vi aquele video q vc mandou ontem</span></div>
+    <div class="panel">
+      <div class="grid2">
+        <div><span class="add">O</span>i<span class="add">,</span> mano<span class="add">,</span> <span class="add">beleza</span>? <span class="add">Então,</span> eu vi aquele <span class="add">vídeo que você</span> mandou ontem</div>
+        <div class="tones">
+          <div class="on"><span>Meu estilo</span><span class="n">1</span></div>
+          <div><span>Mais formal</span><span class="n">2</span></div>
+          <div><span>Mais curto</span><span class="n">3</span></div>
+        </div>
+      </div>
+      <div class="hint"><span class="key">Enter</span> aplicar · <span class="key">1</span>–<span class="key">3</span> refazer em outro tom · <span class="key">Esc</span> cancelar</div>
+    </div>
+    <div class="pill"><span class="ok">✓</span> Pronto em 0,4 s</div>
+  </div>
+
+  <div class="stage">
+    <div class="step">4. Enter: texto trocado</div>
+    <div class="chatbox fixed">Oi, mano, beleza? Então, eu vi aquele vídeo que você mandou ontem</div>
+    <div class="pill"><span class="ok">✓</span> Corrigido · <span class="key">Ctrl</span>+<span class="key">Z</span> desfaz</div>
+  </div>
+
+</div>
+
+<div class="note">
+  <strong>Sobre as barras:</strong> "Carregando modelo" só aparece quando o modelo não está na placa (a primeira vez, ou depois de ficar parado). Com ele já carregado, essa etapa é pulada. "Gerando texto" usa o tamanho do seu texto como referência, já que a correção costuma ter quase o mesmo tamanho do original.
+</div>

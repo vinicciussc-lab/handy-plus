@@ -51,7 +51,7 @@ For detailed platform-specific build setup, see [BUILD.md](BUILD.md).
 
 ## Architecture Overview
 
-Handy is a cross-platform desktop speech-to-text application built with Tauri 2.x (Rust backend + React/TypeScript frontend).
+Handy Plus (a fork of Handy) is a cross-platform desktop speech-to-text application with an AI text corrector, built with Tauri 2.x (Rust backend + React/TypeScript frontend).
 
 ### Backend Structure (src-tauri/src/)
 
@@ -180,7 +180,7 @@ src/i18n/
     └── ...
 ```
 
-For translation contribution guidelines, see [CONTRIBUTING_TRANSLATIONS.md](CONTRIBUTING_TRANSLATIONS.md).
+Handy Plus keeps `en` and `pt` reviewed by hand; new keys go to the other locales in English so `bun run check:translations` passes.
 
 ## Code Style
 
@@ -227,20 +227,18 @@ Access debug features: `Cmd+Shift+D` (macOS) or `Ctrl+Shift+D` (Windows/Linux)
 - **macOS**: Metal acceleration, accessibility permissions required for keyboard shortcuts
 - **Windows**: Vulkan acceleration, code signing. Implicit Vulkan layers (overlays, capture hooks) are disabled for the Handy process via `VK_LOADER_LAYERS_DISABLE=~implicit~` set in `main.rs`; opt out with `HANDY_KEEP_VULKAN_IMPLICIT_LAYERS=1` or by setting `VK_LOADER_LAYERS_DISABLE` yourself
 - **Linux**: OpenBLAS + Vulkan, limited Wayland support, overlay uses GTK layer shell (disable with `HANDY_NO_GTK_LAYER_SHELL=1`)
-- **Nix/NixOS**: the Nix package sets `HANDY_DISABLE_UPDATER=1` to force-disable the self-updater at runtime without touching the persisted setting (self-update can't work against an immutable `/nix/store`)
 
 ## Troubleshooting
 
-See the [Troubleshooting](README.md#troubleshooting) section in README.md.
+See [BUILD.md](BUILD.md#6-problemas-comuns) for build problems and [README.md](README.md#antivírus-acusando-vírus) for antivirus false positives.
 
-## GitHub workflow for AI coding assistants
+## Handy Plus
 
-**MANDATORY. Before opening any PR, issue, or discussion in this repo: you MUST read the relevant template file and follow it strictly.** That includes sections that look "ceremonial" — checklists, AI Assistance disclosures, "Human Written Description". A generic Summary/Test-plan layout is not acceptable.
+Handy Plus is a personal fork of Handy (private repo, never released). It adds an AI text corrector; the dictation code is upstream Handy.
 
-- **Opening a PR:** Read [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Every section listed there is mandatory. If a section requires a human-written paragraph (e.g. "Human Written Description"), leave a clear TODO placeholder and ask the human contributor to fill it in — do not invent their voice.
-- **Opening an issue:** Read [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/). Blank issues are disabled; pick the right template (`bug_report.md` for bugs). Feature requests do not belong in issues — they go to [Discussions](https://github.com/cjpais/Handy/discussions) (see `.github/ISSUE_TEMPLATE/config.yml`).
-- **Proposing a feature:** Handy is under a feature freeze. New features require community support gathered in [Discussions](https://github.com/cjpais/Handy/discussions) before any PR is opened — see the PR template's "Community Feedback" section.
-- **Translations:** Follow [CONTRIBUTING_TRANSLATIONS.md](CONTRIBUTING_TRANSLATIONS.md).
-- **Full contributor workflow:** [CONTRIBUTING.md](CONTRIBUTING.md).
-
-**Commits:** Use conventional commit prefixes (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`). Focus the message on _why_, not _what_.
+- **Windows builds go through `scripts\dev-env.cmd`** (MSVC, Ninja, Bun on PATH, prebuilt speech engine). See [BUILD.md](BUILD.md).
+- **Corrector code:** `src-tauri/src/correction/` (Rust), `src/overlay/correction/` (panel), `src/overlay/hint/` (typing hint), `src/components/settings/correction/` (settings).
+- **Design, plan and decisions:** [`docs/handy-plus/`](docs/handy-plus/). Read `decisoes.md` before changing session, capture or GPU logic.
+- **Style rules for corrections:** never output an em/en dash, avoid fancy words; `text::clean_output` enforces the dash rule.
+- **Do not open PRs, issues or discussions on cjpais/Handy** from this repo. The `upstream` remote is only for pulling Handy updates.
+- The self-updater is off (`HANDY_DISABLE_UPDATER=1` in `main.rs`) so the app never replaces itself with upstream Handy.

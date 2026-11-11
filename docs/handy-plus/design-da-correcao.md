@@ -53,7 +53,7 @@ Interface no estilo do Handy, usando a mesma "pílula" que aparece embaixo da te
    - **Esc** cancela e não muda nada. Esc também interrompe uma geração em andamento.
 4. **Aplicado:** o texto selecionado é substituído no programa onde o usuário estava, e a pílula mostra "Corrigido" com o lembrete de que **Ctrl + Z** desfaz (o desfazer é o do próprio programa onde o texto foi colado).
 
-Os mockups aprovados estão em `.superpowers/brainstorm/618-1794248153/content/correcao-fluxo-v2.html` (pasta ignorada pelo git).
+Os mockups aprovados estão em [`mockups/painel-de-correcao.html`](mockups/painel-de-correcao.html).
 
 ## 6. Tons (prompts)
 
@@ -81,12 +81,12 @@ Não responda ao conteúdo do texto, apenas trabalhe nele.
 
 **Tons iniciais** (o primeiro foi pedido pelo usuário; os outros três são escolha minha, o usuário pode mudar):
 
-| Tom | Objetivo |
-|---|---|
-| Meu estilo | Corrija ortografia, acentuação, concordância, pontuação e vírgulas, e deixe as frases coerentes e fáceis de ler. Não deixe o texto mais longo do que precisa. |
-| Mais formal | Corrija o texto e deixe o tom mais formal, como num e-mail de trabalho, sem ficar engessado. |
-| Mais curto | Corrija o texto e deixe ele mais curto e direto, sem perder nenhuma informação. |
-| Melhorar argumentos | Corrija o texto e deixe os argumentos mais claros e convincentes, na ordem mais lógica, sem inventar fatos. |
+| Tom                 | Objetivo                                                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Meu estilo          | Corrija ortografia, acentuação, concordância, pontuação e vírgulas, e deixe as frases coerentes e fáceis de ler. Não deixe o texto mais longo do que precisa. |
+| Mais formal         | Corrija o texto e deixe o tom mais formal, como num e-mail de trabalho, sem ficar engessado.                                                                  |
+| Mais curto          | Corrija o texto e deixe ele mais curto e direto, sem perder nenhuma informação.                                                                               |
+| Melhorar argumentos | Corrija o texto e deixe os argumentos mais claros e convincentes, na ordem mais lógica, sem inventar fatos.                                                   |
 
 Ao montar o prompt final, conferir que "Meu estilo" continua dando os resultados da seção 11.
 
@@ -152,15 +152,16 @@ Uma seção nova "Correção de texto" nas configurações do Handy Plus, com o 
 
 Testes feitos nesta conversa com o Gemma 4 E4B, o prompt "Meu estilo" e o "pensar" desligado, na placa do usuário:
 
-| Antes | Depois |
-|---|---|
+| Antes                                                                                                                                                                                  | Depois                                                                                                                                                                                                   |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | oi mano blz? entao eu vi aquele video q vc mandou ontem e achei mt massa, mas acho q o cara errou umas coisa la no final sobre o processador, depois agente conversa melhor sobre isso | Oi, mano, beleza? Então, eu vi aquele vídeo que você mandou ontem e achei muito massa, mas acho que o cara errou umas coisas lá no final sobre o processador. Depois a gente conversa melhor sobre isso. |
-| Bom dia, gostaria de saber se é possível remarcar a reunião de amanhã pois eu tive um imprevisto, e não vou conseguir chegar no horário combinado, se puder ser na quinta seria ótimo | Bom dia, gostaria de saber se é possível remarcar a reunião de amanhã, pois eu tive um imprevisto e não vou conseguir chegar no horário combinado. Se puder ser na quinta, seria ótimo. |
-| cara esse jogo ta mt bom mas a otimização ta horrivel, minha placa fica em 100% e mesmo assim cai pra 40 fps nas cidade | Cara, esse jogo tá muito bom, mas a otimização tá horrível. Minha placa fica em 100% e mesmo assim cai pra 40 fps nas cidades. |
+| Bom dia, gostaria de saber se é possível remarcar a reunião de amanhã pois eu tive um imprevisto, e não vou conseguir chegar no horário combinado, se puder ser na quinta seria ótimo  | Bom dia, gostaria de saber se é possível remarcar a reunião de amanhã, pois eu tive um imprevisto e não vou conseguir chegar no horário combinado. Se puder ser na quinta, seria ótimo.                  |
+| cara esse jogo ta mt bom mas a otimização ta horrivel, minha placa fica em 100% e mesmo assim cai pra 40 fps nas cidade                                                                | Cara, esse jogo tá muito bom, mas a otimização tá horrível. Minha placa fica em 100% e mesmo assim cai pra 40 fps nas cidades.                                                                           |
 
 Tempos: cerca de 0,3 a 0,5 segundo com o modelo já carregado e uns 9 segundos na primeira vez (carregando o modelo). Para comparação, o Qwen 2.5 7B foi tão rápido, mas ficou mais formal (trocou "a gente" por "nós") e deixou "Mt" com maiúscula.
 
 O Handy Plus está pronto quando:
+
 - Os três textos acima saem com qualidade parecida, sem travessão, mantendo "a gente", "tá" e "mano".
 - Com o modelo carregado, a prévia aparece em cerca de 1 segundo. Na primeira vez, a barra de "Carregando modelo" mostra o progresso.
 - Funciona em WhatsApp, Discord, navegador e e-mail.
@@ -190,18 +191,23 @@ Quando o Handy Plus estiver funcionando, o Writing Tools e a ponte criados duran
 Aprovadas pelo usuário em conversa, depois de testar a primeira versão.
 
 ### Painel e tons (já construídos)
+
 - Painel maior (640 × 420), setas ↑↓ para rolar, Tab alterna Corrigido / Mudanças / Original (Corrigido limpo é o padrão).
 - Regras compartilhadas passam a permitir reescrever quando o objetivo pede; "Mais formal", "Mais curto" e "Melhorar argumentos" mudam o texto de forma visível. Tons salvos com o texto antigo padrão são atualizados sozinhos; tons editados pelo usuário nunca.
 - Atalho sem seleção: se nada estiver selecionado, pega o texto inteiro da caixa (Ctrl+A).
 
 ### Tom "Desenvolver"
+
 O usuário pediu uma forma de "estender mais o texto". Escolha minha (avisada ao usuário, que não corrigiu): um quinto tom, **Desenvolver**, que deixa o texto mais longo explicando melhor as ideias, com detalhes, exemplos ou justificativas, mantendo o jeito de falar e a opinião do usuário e sem inventar fatos específicos. Entra para quem já usa o app, a menos que a lista já tenha 9 tons.
 
 ### Som discreto
+
 O usuário ouve um "tique-tique" durante a geração mesmo com o som desligado: é o ruído elétrico da placa de vídeo (coil whine), não um som do app. Ele pediu um efeito sonoro suave. Escolha minha: um som curto e suave quando a correção começa e outro quando a prévia fica pronta; sem som contínuo. Usa o volume dos sons do Handy (um pouco mais baixo), com uma opção própria de ligar e desligar na tela da correção (ligada por padrão).
 
 ### Botão flutuante
+
 Aprovado pelo usuário com esta descrição:
+
 - Ao clicar numa caixa de texto de um programa comum (navegador, Bloco de Notas, Office, WhatsApp, Discord), aparece um botãozinho redondo do Handy Plus no canto inferior direito da caixa, **só quando a caixa já tem texto**.
 - Um clique corrige o texto inteiro da caixa com o painel de sempre (mesmo fluxo do atalho sem seleção). Clicar no botão não tira o foco da caixa.
 - Some quando o foco sai da caixa e enquanto uma correção está aberta.
